@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-geist-sans: "Geist Sans", system-ui, sans-serif;
+  --font-geist-mono: "Geist Mono", "Courier New", monospace;
+  --neon-green:  #00ff87;
+  --neon-blue:   #38bdf8;
+  --neon-purple: #a855f7;
+  --neon-amber:  #f59e0b;
+  --neon-red:    #ff4444;
+}
+
+html { color-scheme: dark; }
+
+body {
+  font-family: var(--font-geist-mono);
+  background: #050505;
+  color: #e2e8f0;
+}
+
+/* Neon scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #00ff8730 transparent;
+}
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #00ff8740; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #00ff8780; }
+
+/* Neon selection */
+::selection { background: #00ff8720; color: inherit; }
+
+/* Neon input focus glow */
+.neon-input:focus {
+  outline: none;
+  border-color: var(--neon-green) !important;
+  box-shadow: 0 0 0 1px #00ff8730;
+}
+
+/* Animated pulse dot */
+@keyframes neon-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.neon-pulse { animation: neon-pulse 1.5s ease-in-out infinite; }
+
+/* Timeline line */
+.timeline-line::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 18px;
+  bottom: -4px;
+  width: 1px;
+  background: linear-gradient(to bottom, #00ff8730, transparent);
+}

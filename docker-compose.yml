@@ -1,0 +1,61 @@
+version: "3.8"
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: swarm
+      POSTGRES_PASSWORD: swarmpass
+      POSTGRES_DB: devops_swarm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swarm -d devops_swarm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - swarm_net
+
+  # ── FastAPI Backend ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swarm:swarmpass@postgres:5432/devops_swarm
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - swarm_net
+
+  # ── Next.js Frontend ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - swarm_net
+
+volumes:
+  postgres_data:
+
+networks:
+  swarm_net:
+    driver: bridge

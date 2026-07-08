@@ -40,6 +40,9 @@ class SwarmState(TypedDict):
     iteration: int          # how many coder passes have occurred
     max_iterations: int     # = settings.MAX_CORRECTION_ITERATIONS
 
+    # ── Repo context (fetched once by architect, passed to coder) ─────
+    repo_context: Optional[str]   # full file tree + key config files
+
     # ── Final status ──────────────────────────────────────────────────
     status: str             # running | success | failed
     error_message: Optional[str]

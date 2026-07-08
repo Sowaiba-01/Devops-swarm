@@ -133,6 +133,7 @@ async def github_webhook(
         "test_passed": None,
         "review_notes": None,
         "pr_url": None,
+        "repo_context": None,
         "iteration": 0,
         "max_iterations": settings.MAX_CORRECTION_ITERATIONS,
         "status": "running",

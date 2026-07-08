@@ -45,9 +45,6 @@ def close_sandbox(run_id: str) -> None:
 def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
     """
     Return LangChain tools pre-bound to the E2B sandbox for this run.
-
-    The repo is cloned into /workspace on the first call to `setup_workspace`.
-    Subsequent tool calls work inside that directory.
     """
     WORKSPACE = "/workspace"
 
@@ -65,9 +62,6 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
             out_parts.append(f"exit_code: {result.exit_code}")
             return "\n".join(out_parts)
         except Exception as e:
-            # E2B raises CommandExitException on non-zero exit codes.
-            # Extract the actual stdout/stderr from the exception so callers
-            # can still inspect the real error message (e.g. "fatal: not a git repo").
             stdout = getattr(e, "stdout", "") or ""
             stderr = getattr(e, "stderr", "") or ""
             exit_code = getattr(e, "exit_code", "?")
@@ -85,50 +79,46 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
         Clone the repository into the sandbox and install dependencies.
         Must be called once before any other sandbox tools.
         """
-        # Check if already cloned (idempotent on retry iterations)
         git_check = _run(f"test -d {WORKSPACE}/.git && echo GIT_OK || echo NO_GIT")
         if "GIT_OK" in git_check:
             return f"Workspace already set up at {WORKSPACE} (reusing existing clone)."
 
         clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
-
-        # Remove /workspace if it exists but has no .git (stale empty dir)
         _run(f"rm -rf {WORKSPACE}")
-
         result = _run(f"git clone {clone_url} {WORKSPACE} 2>&1", timeout=120)
 
-        # Verify clone actually worked
         verify = _run(f"test -d {WORKSPACE}/.git && echo GIT_OK || echo NO_GIT")
         if "NO_GIT" in verify:
             return f"CLONE FAILED — no .git directory found. Clone output: {result}"
 
-        # Configure git identity inside sandbox
         _run(f'cd {WORKSPACE} && git config user.email "swarm@devops-bot.ai"')
         _run(f'cd {WORKSPACE} && git config user.name "DevOps Swarm"')
 
-        # Detect language and install deps
         ls_result = _run(f"ls {WORKSPACE}")
         files = ls_result.lower()
 
         if "requirements.txt" in files:
             install = _run(f"cd {WORKSPACE} && pip install -r requirements.txt -q 2>&1", timeout=180)
-            return f"Cloned {owner}/{repo} to {WORKSPACE}. Installed Python deps.\n{install}"
+            return f"Cloned {owner}/{repo}. Installed Python deps.\n{install}"
         elif "package.json" in files:
             install = _run(f"cd {WORKSPACE} && npm install --silent 2>&1", timeout=180)
-            return f"Cloned {owner}/{repo} to {WORKSPACE}. Installed Node deps.\n{install}"
+            return f"Cloned {owner}/{repo}. Installed Node deps.\n{install}"
         elif "go.mod" in files:
             install = _run(f"cd {WORKSPACE} && go mod download 2>&1", timeout=120)
-            return f"Cloned {owner}/{repo} to {WORKSPACE}. Downloaded Go modules.\n{install}"
-        return f"Cloned {owner}/{repo} to {WORKSPACE}. No dependency file found — ready to code."
+            return f"Cloned {owner}/{repo}. Downloaded Go modules.\n{install}"
+        elif "cargo.toml" in files or "Cargo.toml" in ls_result:
+            install = _run(f"cd {WORKSPACE} && cargo fetch 2>&1", timeout=180)
+            return f"Cloned {owner}/{repo}. Fetched Rust crates.\n{install}"
+        return f"Cloned {owner}/{repo}. No dependency file found — ready to code."
 
     # ------------------------------------------------------------------ #
     @tool
     def run_command(command: str) -> str:
         """
-        Run a shell command inside the sandbox workspace.
+        Run any shell command inside the sandbox workspace.
         Always runs from /workspace.
         Args:
-            command: Shell command to execute, e.g. 'pytest tests/ -v'
+            command: Shell command, e.g. 'pytest tests/ -v' or 'pip install requests'
         """
         return _run(f"cd {WORKSPACE} && {command}", timeout=180)
 
@@ -138,7 +128,7 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
         """
         Read the contents of a file in the sandbox.
         Args:
-            path: Absolute path or path relative to /workspace
+            path: Path relative to /workspace or absolute
         """
         abs_path = path if path.startswith("/") else f"{WORKSPACE}/{path}"
         try:
@@ -153,10 +143,9 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
         """
         Write (create or overwrite) a file in the sandbox workspace.
         Args:
-            path: File path relative to /workspace, e.g. 'hello.py' or 'src/utils.py'
+            path: Relative path, e.g. 'src/auth.py' or 'tests/test_auth.py'
             content: Full file content
         """
-        # Always write inside WORKSPACE — strip any leading slash or /workspace prefix
         clean = path.lstrip("/")
         if clean.startswith("workspace/"):
             clean = clean[len("workspace/"):]
@@ -171,9 +160,9 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
     @tool
     def list_files(path: str = "") -> str:
         """
-        List files/directories at the given path inside the sandbox.
+        List files/directories at a path inside the sandbox.
         Args:
-            path: Path relative to /workspace, or empty for workspace root.
+            path: Path relative to /workspace, or empty for root.
         """
         abs_path = f"{WORKSPACE}/{path}".rstrip("/")
         try:
@@ -188,10 +177,160 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
 
     # ------------------------------------------------------------------ #
     @tool
+    def find_in_files(pattern: str, file_extensions: str = "py,js,ts,go,java,rs") -> str:
+        """
+        Search for a string/regex pattern across all source files in the workspace.
+        Use this to understand existing code patterns, find imports, and locate functions
+        BEFORE writing new code — so your code matches the repo's style.
+        Args:
+            pattern: String or regex to search for, e.g. 'def authenticate' or 'import express'
+            file_extensions: Comma-separated file extensions to search (default: py,js,ts,go,java,rs)
+        """
+        includes = " ".join(
+            f"--include='*.{ext.strip()}'" for ext in file_extensions.split(",")
+        )
+        cmd = f"grep -rn {includes} '{pattern}' {WORKSPACE} 2>&1 | grep -v '.git' | head -40"
+        result = _run(cmd)
+        if not result.strip() or "exit_code: 1" in result:
+            return f"No matches found for '{pattern}'."
+        return result
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def search_web(query: str) -> str:
+        """
+        Search the web for documentation, library APIs, error solutions, or best practices.
+        Use this when unsure about library syntax, encountering an unfamiliar error,
+        or need to know the correct way to implement something.
+        Args:
+            query: Search query, e.g. 'fastapi rate limiting middleware example'
+                   or 'python requests retry on timeout'
+        """
+        safe_query = query.replace('"', '\\"').replace("\\", "\\\\")
+        script = """
+import urllib.request, urllib.parse, json, sys
+
+try:
+    q = urllib.parse.quote(QUERY_PLACEHOLDER)
+    url = f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=12) as r:
+        data = json.loads(r.read())
+
+    results = []
+    if data.get("Abstract"):
+        results.append(f"SUMMARY:\\n{data['Abstract']}")
+        if data.get("AbstractURL"):
+            results.append(f"Source: {data['AbstractURL']}")
+    if data.get("Answer"):
+        results.append(f"DIRECT ANSWER:\\n{data['Answer']}")
+    for t in data.get("RelatedTopics", [])[:6]:
+        if isinstance(t, dict) and t.get("Text"):
+            results.append(f"• {t['Text'][:300]}")
+            if t.get("FirstURL"):
+                results.append(f"  -> {t['FirstURL']}")
+    if results:
+        print("\\n".join(results))
+    else:
+        print("No instant results. Use fetch_url() with a specific documentation URL.")
+except Exception as e:
+    print(f"Search error: {e}. Try fetch_url() with a direct URL.")
+""".replace("QUERY_PLACEHOLDER", f'"{safe_query}"')
+        _sbx().files.write("/tmp/_search.py", script)
+        return _run("python3 /tmp/_search.py", timeout=18)
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def fetch_url(url: str) -> str:
+        """
+        Fetch and read the text content of any URL.
+        Use this to read official documentation, Stack Overflow answers, GitHub READMEs,
+        or any web page relevant to the implementation.
+        Returns the first 4000 characters of readable text content.
+        Args:
+            url: Full URL, e.g. 'https://fastapi.tiangolo.com/tutorial/middleware/'
+        """
+        script = f"""
+import urllib.request, re, html as html_mod, sys
+
+try:
+    req = urllib.request.Request(
+        "{url}",
+        headers={{
+            "User-Agent": "Mozilla/5.0 (compatible; DevOpsSwarm/1.0)",
+            "Accept": "text/html,text/plain,*/*",
+        }}
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read().decode("utf-8", errors="replace")
+
+    # Strip scripts and styles first
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", raw, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_mod.unescape(text)
+    text = re.sub(r"[ \\t]+", " ", text)
+    text = re.sub(r"\\n{{3,}}", "\\n\\n", text)
+    text = text.strip()
+    print(text[:4000] if text else "Page returned empty content.")
+except Exception as e:
+    print(f"Failed to fetch {url}: {{e}}")
+"""
+        _sbx().files.write("/tmp/_fetch.py", script)
+        return _run("python3 /tmp/_fetch.py", timeout=22)
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def install_package(package_name: str) -> str:
+        """
+        Install a Python pip package or Node npm package inside the sandbox.
+        Use this when run_tests() fails with ModuleNotFoundError or similar import errors.
+        Args:
+            package_name: Package name, e.g. 'requests', 'pytest-asyncio', 'lodash'
+        """
+        ls_result = _run(f"ls {WORKSPACE}")
+        if "package.json" in ls_result.lower():
+            return _run(f"cd {WORKSPACE} && npm install {package_name} 2>&1", timeout=120)
+        return _run(f"pip install {package_name} -q 2>&1", timeout=120)
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def run_linter() -> str:
+        """
+        Run a static linter on the workspace to catch syntax errors, unused imports,
+        and style issues BEFORE committing. Auto-detects Python/JS/TS/Go.
+        Always run this before git_commit_all().
+        """
+        ls_result = _run(f"ls {WORKSPACE}")
+        files = ls_result.lower()
+
+        if "requirements.txt" in files or any(f.endswith(".py") for f in ls_result.split()):
+            _run("pip install flake8 -q 2>&1")
+            return _run(
+                f"cd {WORKSPACE} && flake8 . --max-line-length=120 "
+                f"--exclude=.git,__pycache__,node_modules,.venv "
+                f"--count --statistics 2>&1 | head -50"
+            )
+        elif "package.json" in files:
+            has_eslint = _run("which eslint 2>/dev/null")
+            if "eslint" in has_eslint:
+                return _run(f"cd {WORKSPACE} && eslint . --ext .js,.ts 2>&1 | head -50")
+            return _run(
+                f"cd {WORKSPACE} && find . \\( -name '*.js' -o -name '*.ts' \\) "
+                f"-not -path './node_modules/*' | xargs -I{{}} node --check {{}} 2>&1 | head -30"
+            )
+        elif "go.mod" in files:
+            return _run(f"cd {WORKSPACE} && go vet ./... 2>&1")
+        elif "cargo.toml" in files or "Cargo.toml" in ls_result:
+            return _run(f"cd {WORKSPACE} && cargo check 2>&1 | head -40", timeout=120)
+        return "No recognisable project type — skipping linter."
+
+    # ------------------------------------------------------------------ #
+    @tool
     def get_git_diff() -> str:
         """
         Get the current git diff of all uncommitted changes in the workspace.
-        Use this to review what the Coder has changed so far.
+        Use this to review what has been changed before committing.
         """
         return _run(f"cd {WORKSPACE} && git diff HEAD 2>&1")
 
@@ -199,8 +338,9 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
     @tool
     def run_tests() -> str:
         """
-        Auto-detect and run the project's test suite.
-        Returns full test output including pass/fail counts.
+        Auto-detect and run the project test suite.
+        Returns full output including pass/fail counts and error details.
+        If tests fail with ModuleNotFoundError, use install_package() then retry.
         """
         ls_result = _run(f"ls {WORKSPACE}")
         files = ls_result.lower()
@@ -211,7 +351,8 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
             return _run(f"cd {WORKSPACE} && npm test -- --watchAll=false 2>&1", timeout=300)
         if "go.mod" in files:
             return _run(f"cd {WORKSPACE} && go test ./... 2>&1", timeout=300)
-        # Fallback
+        if "cargo.toml" in files or "Cargo.toml" in ls_result:
+            return _run(f"cd {WORKSPACE} && cargo test 2>&1", timeout=300)
         return _run(f"cd {WORKSPACE} && python -m pytest --tb=short -q 2>&1", timeout=300)
 
     # ------------------------------------------------------------------ #
@@ -220,42 +361,56 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
         """
         Stage all changes and create a git commit.
         Args:
-            message: Commit message
+            message: Descriptive commit message, e.g. 'feat: add rate limiting middleware'
         """
-        out = _run(
-            f"cd {WORKSPACE} && git add -A && git commit -m '{message}' 2>&1"
-        )
-        return out
+        return _run(f"cd {WORKSPACE} && git add -A && git commit -m '{message}' 2>&1")
 
     # ------------------------------------------------------------------ #
     @tool
     def git_push(branch: str) -> str:
         """
-        Push the current sandbox commits to the remote branch.
+        Push the current commits to the remote branch on GitHub.
         Args:
-            branch: Remote branch name to push to
+            branch: Remote branch name, e.g. 'swarm/issue-5-add-rate-limiting'
         """
         push_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
-        out = _run(
+        return _run(
             f"cd {WORKSPACE} && "
             f"git remote set-url origin {push_url} && "
             f"git push origin HEAD:{branch} 2>&1"
         )
-        return out
 
     # ------------------------------------------------------------------ #
     @tool
     def run_security_scan() -> str:
         """
-        Run a static security analysis on the workspace using bandit (Python)
-        or a basic pattern scan for other languages.
+        Run security analysis: bandit for Python, plus universal secret pattern scan.
+        Detects hardcoded credentials, SQL injection risks, path traversal, etc.
         """
-        # Install bandit if Python project
-        install = _run("pip install bandit -q 2>&1")
-        result = _run(f"cd {WORKSPACE} && bandit -r . -ll 2>&1", timeout=120)
-        if "command not found" in result:
-            return "bandit not available; skipping security scan."
-        return result
+        ls_result = _run(f"ls {WORKSPACE}")
+        files = ls_result.lower()
+        results = []
+
+        if "requirements.txt" in files or any(f.endswith(".py") for f in ls_result.split()):
+            _run("pip install bandit -q 2>&1")
+            bandit = _run(
+                f"cd {WORKSPACE} && bandit -r . -ll -f txt "
+                f"--exclude .git,__pycache__,.venv 2>&1 | head -60"
+            )
+            results.append(f"=== Python Security (bandit) ===\n{bandit}")
+
+        # Scan for hardcoded secrets in any language
+        secret_scan = _run(
+            f"grep -rn --include='*.py' --include='*.js' --include='*.ts' --include='*.go' "
+            f"-E '(password|secret|api_key|token|private_key)\\s*=\\s*[\"\\'][^\"\\']{{8,}}[\"\\']' "
+            f"{WORKSPACE} 2>&1 | grep -v '.git' | grep -v 'test_' | head -20"
+        )
+        if secret_scan.strip() and "exit_code: 1" not in secret_scan:
+            results.append(f"=== ⚠️  Potential Hardcoded Secrets ===\n{secret_scan}")
+        else:
+            results.append("=== Hardcoded Secrets: None detected ===")
+
+        return "\n\n".join(results) if results else "Security scan complete — no issues."
 
     return [
         setup_workspace,
@@ -263,6 +418,11 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
         read_file,
         write_file,
         list_files,
+        find_in_files,
+        search_web,
+        fetch_url,
+        install_package,
+        run_linter,
         get_git_diff,
         run_tests,
         git_commit_all,

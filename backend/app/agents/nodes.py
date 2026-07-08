@@ -10,6 +10,13 @@ Node functions are async and follow the LangGraph contract:
 
 ROUTING NOTE: Only supervisor_node sets the 'phase' field.
 Agent nodes (architect, coder, reviewer, pr) only update their own fields.
+
+POWER-UPS in this version:
+- Architect automatically pre-fetches full repo context before ReAct loop.
+- Architect posts implementation plan as GitHub issue comment.
+- Coder has web search, URL fetch, find_in_files, linter, auto-install tools.
+- Coder auto-detects ModuleNotFoundError and installs missing packages.
+- PR node posts a success comment on the original issue with the PR link.
 """
 
 import asyncio
@@ -45,7 +52,7 @@ from .state import SwarmState
 
 logger = logging.getLogger(__name__)
 
-MAX_REACT_ITERATIONS = 20  # safety cap per agent invocation
+MAX_REACT_ITERATIONS = 25  # raised from 20 — web search adds extra steps
 
 
 # ---------------------------------------------------------------------------
@@ -114,14 +121,10 @@ async def _react_loop(
         try:
             response: AIMessage = await llm.ainvoke(messages)
         except Exception as llm_err:
-            # Groq raises BadRequestError when the model generates a malformed
-            # tool call (e.g. <function=foo{...}> instead of JSON).
-            # Fix: trim the last message and re-prompt more strictly.
             err_str = str(llm_err)
             if "tool_use_failed" in err_str or "failed_generation" in err_str:
                 await _emit(run_id, agent_name, "status",
                             "LLM generated malformed tool call — retrying with strict prompt...")
-                # Add a corrective user message and retry
                 messages.append(HumanMessage(
                     content="Your previous response had a malformed tool call. "
                             "You MUST call tools using the proper JSON function-call format only. "
@@ -131,24 +134,20 @@ async def _react_loop(
             raise
         messages.append(response)
 
-        # Emit the LLM reasoning text (may be empty if it only called tools)
         if response.content:
             await _emit(run_id, agent_name, "thought", str(response.content))
             final_response = str(response.content)
 
         if not response.tool_calls:
-            break  # No more tool calls - done
+            break
 
-        # Execute each requested tool call
         for tc in response.tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
             call_id = tc["id"]
 
             await _emit(
-                run_id,
-                agent_name,
-                "tool_call",
+                run_id, agent_name, "tool_call",
                 f"Calling `{tool_name}`",
                 extra={"tool": tool_name, "args": tool_args},
             )
@@ -158,7 +157,6 @@ async def _react_loop(
                 if fn is None:
                     result_str = f"ERROR: Unknown tool '{tool_name}'"
                 else:
-                    # Run sync tools in a thread pool to avoid blocking the event loop
                     result = await asyncio.to_thread(fn.invoke, tool_args)
                     result_str = str(result)
             except Exception as exc:
@@ -166,10 +164,8 @@ async def _react_loop(
                 logger.exception("Tool execution error: %s", tool_name)
 
             await _emit(
-                run_id,
-                agent_name,
-                "tool_result",
-                result_str[:1000],  # truncate for broadcast
+                run_id, agent_name, "tool_result",
+                result_str[:1500],
                 extra={"tool": tool_name},
             )
 
@@ -181,26 +177,20 @@ async def _react_loop(
 
 
 # ---------------------------------------------------------------------------
-# Supervisor (pure routing - no LLM call)
+# Supervisor (pure routing — no LLM call)
 # ---------------------------------------------------------------------------
 
 async def supervisor_node(state: SwarmState) -> dict:
-    """
-    Sole authority for setting 'phase'.
-    Derives next phase purely from logical state fields.
-    """
+    """Sole authority for setting 'phase'. Pure logic — no LLM."""
     run_id = state["run_id"]
 
-    # Hard stop if run is already marked failed
     if state.get("status") == "failed":
-        await _emit(run_id, "supervisor", "status", "Run marked failed, stopping.")
+        await _emit(run_id, "supervisor", "status", "Run marked failed — stopping.")
         return {"phase": "done"}
 
-    # PR already created -> done
     if state.get("pr_url"):
         return {"phase": "done"}
 
-    # No plan yet -> architect
     if not state.get("plan"):
         await _emit(run_id, "supervisor", "status", "Routing to Architect...")
         return {"phase": "architect"}
@@ -208,24 +198,19 @@ async def supervisor_node(state: SwarmState) -> dict:
     iteration = state.get("iteration", 0)
     max_iter = state.get("max_iterations", settings.MAX_CORRECTION_ITERATIONS)
 
-    # Coder hasn't run yet OR tests failed and we still have retries left
     if state.get("test_passed") is None or (
         state.get("test_passed") is False and iteration < max_iter
     ):
         await _emit(
-            run_id,
-            "supervisor",
-            "status",
+            run_id, "supervisor", "status",
             f"Routing to Coder (iteration {iteration + 1}/{max_iter})...",
         )
         return {"phase": "coder"}
 
-    # Tests passed (or exhausted retries) and no review yet -> reviewer
     if not state.get("review_notes"):
         await _emit(run_id, "supervisor", "status", "Routing to Reviewer...")
         return {"phase": "reviewer"}
 
-    # Review done, no PR yet -> create PR
     await _emit(run_id, "supervisor", "status", "Routing to PR Creator...")
     return {"phase": "pr"}
 
@@ -236,26 +221,55 @@ async def supervisor_node(state: SwarmState) -> dict:
 
 async def architect_node(state: SwarmState) -> dict:
     run_id = state["run_id"]
-    await _emit(run_id, "architect", "status", "Analyzing issue and planning implementation...")
+    owner  = state["repo_owner"]
+    repo   = state["repo_name"]
+    token  = state["github_token"]
 
-    gh_tools = make_github_tools(
-        token=state["github_token"],
-        owner=state["repo_owner"],
-        repo=state["repo_name"],
-    )
+    await _emit(run_id, "architect", "status",
+                "Fetching full repository context...")
 
-    # Architect only needs read-only GitHub tools
+    gh_tools = make_github_tools(token=token, owner=owner, repo=repo)
+
+    # ── Step 1: Pre-fetch full repo context automatically ──────────────
+    # This gives the architect the complete file tree + key files BEFORE
+    # it starts reasoning — so it doesn't waste ReAct steps on blind exploration.
+    context_tool = next(t for t in gh_tools if t.name == "get_full_repo_context")
+    try:
+        repo_context = await asyncio.to_thread(context_tool.invoke, {})
+        await _emit(run_id, "architect", "status",
+                    f"Repo context loaded ({len(repo_context)} chars).")
+    except Exception as ctx_err:
+        repo_context = f"Unable to fetch repo context: {ctx_err}"
+        await _emit(run_id, "architect", "status", f"Context fetch warning: {ctx_err}")
+
+    # ── Step 2: Check issue comments for extra requirements ────────────
+    comments_tool = next(t for t in gh_tools if t.name == "get_issue_comments")
+    try:
+        issue_comments = await asyncio.to_thread(
+            comments_tool.invoke, {"issue_number": state["issue_number"]}
+        )
+    except Exception:
+        issue_comments = "(Could not fetch comments)"
+
+    # Architect gets read-only tools + context already injected
     read_tools = [t for t in gh_tools if t.name in (
-        "get_file_contents", "list_directory", "search_code", "get_repo_structure"
+        "get_file_contents", "list_directory", "search_code",
+        "get_repo_structure", "get_issue_comments",
     )]
 
     user_msg = (
-        f"Repository: {state['repo_owner']}/{state['repo_name']}\n\n"
+        f"Repository: {owner}/{repo}\n\n"
         f"GitHub Issue #{state['issue_number']}: {state['issue_title']}\n\n"
-        f"{state['issue_body']}\n\n"
-        "Please explore the repository structure, understand the codebase, "
-        "and produce a detailed implementation plan."
+        f"Issue Description:\n{state['issue_body']}\n\n"
+        f"Issue Comments:\n{issue_comments}\n\n"
+        f"=== REPOSITORY CONTEXT (pre-fetched) ===\n{repo_context}\n"
+        f"=== END CONTEXT ===\n\n"
+        "The repository context above has already been fetched. "
+        "Now read the specific files most relevant to this issue, "
+        "then produce a detailed implementation plan."
     )
+
+    await _emit(run_id, "architect", "status", "Planning implementation...")
 
     plan = await _react_loop(
         run_id=run_id,
@@ -265,8 +279,29 @@ async def architect_node(state: SwarmState) -> dict:
         tools=read_tools,
     )
 
+    # ── Step 3: Post the plan as a GitHub issue comment ────────────────
+    # This makes the swarm transparent — repo owner sees the plan before code is written.
+    comment_tool = next(t for t in gh_tools if t.name == "add_issue_comment")
+    plan_comment = (
+        "## 🤖 DevOps Swarm — Implementation Plan\n\n"
+        f"{plan[:3500]}\n\n"
+        "---\n"
+        "*The swarm is now coding this. A draft PR will be opened when complete.*\n"
+        "*Built by Sowaiba Arshad — DevOps Swarm AI*"
+    )
+    try:
+        await asyncio.to_thread(
+            comment_tool.invoke,
+            {"issue_number": state["issue_number"], "body": plan_comment},
+        )
+        await _emit(run_id, "architect", "status",
+                    "Implementation plan posted as GitHub comment.")
+    except Exception as comment_err:
+        await _emit(run_id, "architect", "status",
+                    f"Could not post plan comment: {comment_err}")
+
     await _emit(run_id, "architect", "status", "Planning complete.")
-    return {"plan": plan}
+    return {"plan": plan, "repo_context": repo_context}
 
 
 # ---------------------------------------------------------------------------
@@ -274,51 +309,71 @@ async def architect_node(state: SwarmState) -> dict:
 # ---------------------------------------------------------------------------
 
 async def coder_node(state: SwarmState) -> dict:
-    run_id = state["run_id"]
+    run_id    = state["run_id"]
     iteration = state.get("iteration", 0)
-    token = state["github_token"]
-    owner = state["repo_owner"]
-    repo = state["repo_name"]
+    token     = state["github_token"]
+    owner     = state["repo_owner"]
+    repo      = state["repo_name"]
 
     await _emit(
-        run_id,
-        "coder",
-        "status",
-        f"Coding (iteration {iteration + 1}/{state.get('max_iterations', 3)})...",
+        run_id, "coder", "status",
+        f"Coding iteration {iteration + 1}/{state.get('max_iterations', 3)}...",
     )
 
-    # Generate a branch name on first iteration
+    # Generate branch name on first iteration
     branch_name = state.get("branch_name")
     if not branch_name:
         safe_title = re.sub(r"[^a-zA-Z0-9-]", "-", state["issue_title"])[:40].lower().rstrip("-")
         branch_name = f"swarm/issue-{state['issue_number']}-{safe_title}"
 
-    # Create branch on GitHub (idempotent if already exists)
+    # Create branch on GitHub (idempotent)
     gh_tools = make_github_tools(token=token, owner=owner, repo=repo)
     branch_tool = next(t for t in gh_tools if t.name == "create_branch")
     try:
         await asyncio.to_thread(branch_tool.invoke, {"branch_name": branch_name})
     except Exception as e:
-        await _emit(run_id, "coder", "status", f"Branch creation note: {e} (may already exist, continuing)")
+        await _emit(run_id, "coder", "status",
+                    f"Branch note: {e} (may already exist, continuing)")
 
-    # E2B tools bound to this run's sandbox
+    # All E2B tools including the new power-ups
     e2b_tools = make_e2b_tools(run_id=run_id, token=token, owner=owner, repo=repo)
 
+    # Build context for retry iterations
     prior_failure = ""
     if state.get("test_output") and state.get("test_passed") is False:
-        prior_failure = f"\n\nPREVIOUS TEST FAILURE (you MUST fix this):\n{state['test_output']}"
+        prior_failure = (
+            f"\n\n⚠️  PREVIOUS ATTEMPT FAILED — you MUST fix this:\n"
+            f"{state['test_output'][-2000:]}\n"
+            "Read the error carefully. Fix the specific failing assertion or import."
+        )
+
+    # Include repo context if architect captured it
+    repo_ctx_snippet = ""
+    if state.get("repo_context"):
+        # Include just the file tree part (first 2000 chars) so coder knows what exists
+        repo_ctx_snippet = (
+            f"\n=== REPO FILE TREE (for reference) ===\n"
+            f"{state['repo_context'][:2000]}\n"
+            f"=== END ===\n"
+        )
 
     user_msg = (
         f"Repository: {owner}/{repo}\n"
         f"Branch to work on: {branch_name}\n"
-        f"Issue #{state['issue_number']}: {state['issue_title']}\n\n"
-        f"=== ARCHITECT'S PLAN ===\n{state['plan']}\n=== END PLAN ==={prior_failure}\n\n"
-        "Steps:\n"
-        "1. Call setup_workspace() FIRST (clones the repo if not already done).\n"
-        "2. Implement all changes described in the plan.\n"
-        "3. Call git_commit_all() with a descriptive commit message.\n"
-        "4. Call run_tests() and report the exact output.\n"
-        "5. End your response with TESTS_PASSED or TESTS_FAILED: <one-line reason>."
+        f"Issue #{state['issue_number']}: {state['issue_title']}\n"
+        f"{repo_ctx_snippet}"
+        f"\n=== ARCHITECT'S IMPLEMENTATION PLAN ===\n"
+        f"{state['plan']}\n"
+        f"=== END PLAN ==={prior_failure}\n\n"
+        "Your steps:\n"
+        "1. setup_workspace() — FIRST, always.\n"
+        "2. find_in_files() — understand existing patterns before writing.\n"
+        "3. search_web() or fetch_url() if unsure about any library API.\n"
+        "4. Implement ALL changes from the plan.\n"
+        "5. run_linter() — fix any issues before committing.\n"
+        "6. git_commit_all('feat: <description>') — commit everything.\n"
+        "7. run_tests() — if ModuleNotFoundError, call install_package() and retry.\n"
+        "8. End with TESTS_PASSED or TESTS_FAILED: <reason>."
     )
 
     result = await _react_loop(
@@ -330,28 +385,47 @@ async def coder_node(state: SwarmState) -> dict:
     )
 
     tests_passed = "TESTS_PASSED" in result.upper()
+
+    # ── Auto-recovery: detect import errors and re-run ─────────────────
+    # If the LLM forgot to call install_package itself, we catch it here
+    if not tests_passed and "ModuleNotFoundError: No module named" in result:
+        match = re.search(r"No module named ['\"]([^'\"]+)['\"]", result)
+        if match:
+            pkg = match.group(1).split(".")[0]
+            await _emit(run_id, "coder", "status",
+                        f"Auto-installing missing package: {pkg}")
+            install_tool = next(t for t in e2b_tools if t.name == "install_package")
+            await asyncio.to_thread(install_tool.invoke, {"package_name": pkg})
+
+            test_tool = next(t for t in e2b_tools if t.name == "run_tests")
+            retry_result = await asyncio.to_thread(test_tool.invoke, {})
+            await _emit(run_id, "coder", "tool_result",
+                        f"Tests after auto-install:\n{retry_result[:1000]}")
+
+            if "passed" in retry_result.lower() and "failed" not in retry_result.lower():
+                tests_passed = True
+                result = result + f"\n\nAuto-install of '{pkg}' fixed the issue.\n{retry_result}\nTESTS_PASSED"
+
     test_summary = (
         result.split("TESTS_FAILED:")[-1].strip()
-        if not tests_passed
-        else "All tests passed."
+        if not tests_passed and "TESTS_FAILED:" in result
+        else ("All tests passed." if tests_passed else result[-300:])
     )
 
     await _emit(
-        run_id,
-        "coder",
-        "status",
-        "Tests passed." if tests_passed else f"Tests failed: {test_summary}",
+        run_id, "coder", "status",
+        "✅ Tests passed." if tests_passed else f"❌ Tests failed: {test_summary[:200]}",
     )
 
-    # Push immediately while sandbox is still alive.
-    # We do this here rather than in pr_node to avoid sandbox timeout issues.
+    # Push immediately while sandbox is warm
     await _emit(run_id, "coder", "status", f"Pushing branch {branch_name} to GitHub...")
     push_tool = next(t for t in e2b_tools if t.name == "git_push")
     try:
         push_result = await asyncio.to_thread(push_tool.invoke, {"branch": branch_name})
         await _emit(run_id, "coder", "status", f"Push: {push_result}")
     except Exception as push_err:
-        await _emit(run_id, "coder", "status", f"Push warning: {push_err} (will retry in PR step)")
+        await _emit(run_id, "coder", "status",
+                    f"Push warning: {push_err} (will retry in PR step)")
 
     return {
         "branch_name": branch_name,
@@ -367,7 +441,8 @@ async def coder_node(state: SwarmState) -> dict:
 
 async def reviewer_node(state: SwarmState) -> dict:
     run_id = state["run_id"]
-    await _emit(run_id, "reviewer", "status", "Reviewing code and running security scan...")
+    await _emit(run_id, "reviewer", "status",
+                "Reviewing code, running security scan...")
 
     e2b_tools = make_e2b_tools(
         run_id=run_id,
@@ -376,24 +451,27 @@ async def reviewer_node(state: SwarmState) -> dict:
         repo=state["repo_name"],
     )
     review_tools = [t for t in e2b_tools if t.name in (
-        "read_file", "list_files", "get_git_diff", "run_security_scan"
+        "read_file", "list_files", "get_git_diff", "run_security_scan", "find_in_files",
     )]
 
     tests_status = (
-        "PASSED"
+        "PASSED ✅"
         if state.get("test_passed")
-        else f"FAILED\n{state.get('test_output', '')}"
+        else f"FAILED ❌\n{state.get('test_output', '')[-1500:]}"
     )
 
     user_msg = (
-        f"Plan:\n{state['plan']}\n\n"
+        f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
+        f"Issue #{state['issue_number']}: {state['issue_title']}\n\n"
+        f"Implementation Plan:\n{state.get('plan', 'N/A')[:800]}\n\n"
         f"Test Result: {tests_status}\n"
         f"Iterations used: {state.get('iteration', 0)} / {state.get('max_iterations', 3)}\n\n"
-        "Please:\n"
-        "1. Get the git diff with get_git_diff().\n"
-        "2. Run run_security_scan().\n"
-        "3. Read any files you need for a thorough review.\n"
-        "4. Produce your structured review."
+        "Review the changes:\n"
+        "1. get_git_diff() — see every line changed.\n"
+        "2. run_security_scan() — automated checks.\n"
+        "3. read_file() any modified files for full context.\n"
+        "4. find_in_files() if you need to check patterns.\n"
+        "5. Produce your full structured review."
     )
 
     review_notes = await _react_loop(
@@ -416,26 +494,26 @@ async def pr_node(state: SwarmState) -> dict:
     run_id = state["run_id"]
     await _emit(run_id, "system", "status", "Pushing changes and opening pull request...")
 
-    token = state["github_token"]
-    owner = state["repo_owner"]
-    repo = state["repo_name"]
+    token       = state["github_token"]
+    owner       = state["repo_owner"]
+    repo        = state["repo_name"]
     branch_name = state["branch_name"]
 
-    # Push was already done in coder_node while the sandbox was warm.
-    # Attempt a re-push here as a safety net in case coder's push failed.
+    # Safety-net push (primary push already done in coder_node)
     try:
         e2b_tools = make_e2b_tools(run_id=run_id, token=token, owner=owner, repo=repo)
         push_tool = next(t for t in e2b_tools if t.name == "git_push")
         push_result = await asyncio.to_thread(push_tool.invoke, {"branch": branch_name})
         await _emit(run_id, "system", "status", f"Push result: {push_result}")
     except Exception as push_err:
-        await _emit(run_id, "system", "status", f"Push skipped (already pushed): {push_err}")
+        await _emit(run_id, "system", "status",
+                    f"Push skipped (already pushed): {push_err}")
 
     # Build PR description
     pr_body = PR_DESCRIPTION_TEMPLATE.format(
-        summary=state.get("plan", "")[:500],
+        summary=state.get("plan", "")[:600],
         changes=f"See diff on branch `{branch_name}`",
-        test_output=(state.get("test_output") or "N/A")[:1000],
+        test_output=(state.get("test_output") or "N/A")[-1200:],
         review_notes=state.get("review_notes") or "N/A",
         issue_number=state["issue_number"],
     )
@@ -451,19 +529,45 @@ async def pr_node(state: SwarmState) -> dict:
             "title": pr_title,
             "body": pr_body,
             "head_branch": branch_name,
-            "base_branch": "main",   # create_pull_request auto-detects the real default branch
+            "base_branch": "main",
             "draft": True,
         },
     )
 
-    # Extract URL from "PR #5 created: https://..."
     pr_url = ""
     if "https://" in pr_result:
         pr_url = "https://" + pr_result.split("https://")[-1].strip()
 
     await _emit(run_id, "system", "status", pr_result)
 
-    # Update Run record
+    # ── Post success comment on the original issue ─────────────────────
+    # This notifies the issue author that the swarm is done.
+    if pr_url:
+        comment_tool = next(t for t in gh_tools if t.name == "add_issue_comment")
+        iterations_used = state.get("iteration", 0)
+        verdict = "APPROVED" if "APPROVED" in (state.get("review_notes") or "") else "reviewed"
+        success_comment = (
+            f"## ✅ DevOps Swarm — Issue Resolved\n\n"
+            f"A draft pull request has been opened: **{pr_url}**\n\n"
+            f"**Summary:** {state.get('plan', '')[:300]}\n\n"
+            f"**Iterations:** {iterations_used} / {state.get('max_iterations', 3)}\n"
+            f"**Review verdict:** {verdict}\n\n"
+            f"Please review the PR and merge if everything looks good.\n\n"
+            f"---\n*DevOps Swarm AI — LangGraph + Groq Llama 3.3 70B + E2B*\n"
+            f"*Built by Sowaiba Arshad*"
+        )
+        try:
+            await asyncio.to_thread(
+                comment_tool.invoke,
+                {"issue_number": state["issue_number"], "body": success_comment},
+            )
+            await _emit(run_id, "system", "status",
+                        "Success comment posted on GitHub issue.")
+        except Exception as ce:
+            await _emit(run_id, "system", "status",
+                        f"Could not post success comment: {ce}")
+
+    # Update Run record in DB
     from sqlalchemy import update as sql_update
 
     async with AsyncSessionLocal() as session:
@@ -480,9 +584,7 @@ async def pr_node(state: SwarmState) -> dict:
         )
         await session.commit()
 
-    # Clean up E2B sandbox
     close_sandbox(run_id)
-
     return {"pr_url": pr_url, "status": "success"}
 
 

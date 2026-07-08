@@ -280,11 +280,86 @@ def make_github_tools(token: str, owner: str, repo: str):
             resp.raise_for_status()
         return "Comment posted."
 
+    # ------------------------------------------------------------------ #
+    @tool
+    def get_full_repo_context() -> str:
+        """
+        Get a comprehensive snapshot of the repository in one call:
+        full recursive file tree + contents of key config/dependency files.
+        Call this at the very start of planning to understand the full codebase.
+        """
+        url = f"{GITHUB_API}/repos/{owner}/{repo}/git/trees/HEAD"
+        with httpx.Client() as c:
+            resp = c.get(url, headers=auth_headers, params={"recursive": "1"})
+        resp.raise_for_status()
+        tree = resp.json().get("tree", [])
+        file_paths = [n["path"] for n in tree if n["type"] == "blob"]
+        tree_str = "\n".join(file_paths[:400])
+
+        key_files = [
+            "README.md", "readme.md", "README.rst",
+            "requirements.txt", "requirements-dev.txt",
+            "package.json", "go.mod", "Cargo.toml",
+            "pyproject.toml", "setup.py", "setup.cfg",
+            ".github/workflows/ci.yml", ".github/workflows/test.yml",
+            "Makefile", "docker-compose.yml", ".env.example",
+        ]
+        key_contents = []
+        with httpx.Client() as c:
+            for kf in key_files:
+                match = next(
+                    (p for p in file_paths if p.lower() == kf.lower()), None
+                )
+                if not match:
+                    continue
+                resp = c.get(
+                    f"{GITHUB_API}/repos/{owner}/{repo}/contents/{match}",
+                    headers=auth_headers,
+                )
+                if resp.status_code == 200:
+                    raw = base64.b64decode(resp.json()["content"]).decode(
+                        "utf-8", errors="replace"
+                    )
+                    key_contents.append(f"=== {match} ===\n{raw[:2500]}")
+
+        summary = (
+            f"REPOSITORY: {owner}/{repo}\n"
+            f"TOTAL FILES: {len(file_paths)}\n\n"
+            f"FILE TREE:\n{tree_str}\n\n"
+            + ("KEY FILES:\n" + "\n\n".join(key_contents) if key_contents else "")
+        )
+        return summary[:12000]
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def get_issue_comments(issue_number: int) -> str:
+        """
+        Fetch all comments on a GitHub issue to get additional context or requirements
+        added after the original issue was opened.
+        Args:
+            issue_number: The issue number
+        """
+        url = f"{GITHUB_API}/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        with httpx.Client() as c:
+            resp = c.get(url, headers=auth_headers, params={"per_page": 20})
+        resp.raise_for_status()
+        comments = resp.json()
+        if not comments:
+            return "No comments on this issue."
+        lines = []
+        for cm in comments:
+            author = cm["user"]["login"]
+            body = cm["body"][:600]
+            lines.append(f"@{author}:\n{body}")
+        return "\n\n---\n\n".join(lines)
+
     return [
         get_file_contents,
         list_directory,
         search_code,
         get_repo_structure,
+        get_full_repo_context,
+        get_issue_comments,
         create_branch,
         create_or_update_file,
         create_pull_request,

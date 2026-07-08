@@ -1,81 +1,138 @@
-# 🤖 DevOps Swarm AI
+# DevOps Swarm AI
 
-> **A production-grade multi-agent system that autonomously resolves GitHub issues — reads the issue, writes code in an isolated cloud sandbox, runs tests, self-corrects up to 3×, and opens a draft PR. No human in the loop.**
+**Autonomous multi-agent system that resolves GitHub issues end-to-end — reads the issue, searches the web for docs, writes and tests code in an isolated cloud sandbox, self-corrects up to 3×, and opens a draft PR. Zero human input required.**
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-14-000000?style=flat-square&logo=next.js&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-0.2-4A90D9?style=flat-square)
+![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-4A90D9?style=flat-square)
 ![Groq](https://img.shields.io/badge/Groq-Llama_3.3_70B-F55036?style=flat-square)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?style=flat-square&logo=fastapi)
 ![E2B](https://img.shields.io/badge/E2B-Cloud_Sandbox-FF6B35?style=flat-square)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql)
 
 ---
 
-## What this actually does
+## What it does
 
-You assign a GitHub issue. The swarm autonomously:
+You open a GitHub issue. The swarm:
 
-1. **Reads** the issue and the entire repository structure via GitHub API
-2. **Plans** the implementation — which files to change, how to test it
-3. **Writes** the code in an E2B cloud sandbox (isolated, safe, reproducible)
-4. **Runs** the test suite. If tests fail, it reads the errors and **tries again** (up to 3 iterations)
-5. **Reviews** its own code — security scan + quality check
-6. **Opens a draft PR** on GitHub with full test output and review notes
+1. Fetches the **full repository file tree + key config files** in one shot before planning starts
+2. Checks **issue comments** for additional context
+3. Searches the **live web** for documentation and library APIs it needs
+4. Writes code in an **isolated E2B cloud sandbox** — never touches your machine
+5. Runs the test suite. On failure, reads the exact error, **auto-installs missing packages**, fixes the code, and retries up to 3×
+6. Posts the **implementation plan as a GitHub comment** so you see what's coming before a line is written
+7. Runs a **security scan** — detects hardcoded secrets, SQL injection risks, path traversal
+8. Opens a **draft PR** with test output and full review notes
+9. Posts a **completion comment** on the original issue with the PR link
 
-You get a PR link. You review and merge. That's it.
+The repo owner gets two GitHub notifications: one when the plan is posted, one when the PR is ready.
 
 ---
 
 ## Architecture
 
 ```
-GitHub Issue
-     │
-     ▼
-┌─────────────────────────────────────────────────────────┐
-│                    LangGraph StateGraph                  │
-│                                                         │
-│  START → [SUPERVISOR] ──────────────────────────────┐  │
-│               │                                     │  │
-│          ┌────┴────┐                                │  │
-│          ▼         │                                │  │
-│     [ARCHITECT]    │  Reads repo structure          │  │
-│      ReAct loop    │  Produces implementation plan  │  │
-│          │         │                                │  │
-│          └────►[SUPERVISOR]                         │  │
-│               │                                     │  │
-│          ┌────┴────┐                                │  │
-│          ▼         │                                │  │
-│       [CODER]      │  Clones repo → writes code     │  │
-│      ReAct loop    │  Runs tests → commits          │  │
-│     (up to 3×)     │  Pushes branch to GitHub       │  │
-│          │         │                                │  │
-│          └────►[SUPERVISOR]                         │  │
-│               │                                     │  │
-│          ┌────┴────┐                                │  │
-│          ▼         │                                │  │
-│     [REVIEWER]     │  Reads diff → security scan    │  │
-│      ReAct loop    │  APPROVED or NEEDS_REVISION    │  │
-│          │         │                                │  │
-│          └────►[SUPERVISOR]                         │  │
-│               │                                     │  │
-│          ┌────┴────┐                                │  │
-│          ▼         │                                │  │
-│      [PR NODE]     │  Opens draft PR on GitHub      │  │
-│          │         │                                │  │
-│         END ◄──────┘                                │  │
-└─────────────────────────────────────────────────────────┘
+GitHub Issue Opened
+       │
+       ▼
+ GitHub Webhook ──► POST /webhook  (HMAC-SHA256 validated)
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    LangGraph StateGraph                           │
+│                                                                  │
+│  START ──► SUPERVISOR ──────────────────────────────────────┐   │
+│                │                                            │   │
+│        ┌───────┴────────┐                                   │   │
+│        ▼                │                                   │   │
+│   [ARCHITECT]           │  • Pre-fetches full file tree     │   │
+│   ReAct loop            │  • Reads key config files         │   │
+│   + GitHub tools        │  • Checks issue comments          │   │
+│        │                │  • Posts plan as GitHub comment   │   │
+│        └──────► SUPERVISOR                                  │   │
+│                │                                            │   │
+│        ┌───────┴────────┐                                   │   │
+│        ▼                │                                   │   │
+│    [CODER]              │  • Clones repo into E2B sandbox   │   │
+│   ReAct loop            │  • Greps codebase for patterns    │   │
+│   + E2B tools           │  • Searches web for docs          │   │
+│   + Web tools           │  • Fetches live documentation     │   │
+│   (up to 3×)            │  • Auto-installs missing packages │   │
+│        │                │  • Runs linter before commit      │   │
+│        └──────► SUPERVISOR                                  │   │
+│                │                                            │   │
+│        ┌───────┴────────┐                                   │   │
+│        ▼                │                                   │   │
+│   [REVIEWER]            │  • Reads full git diff            │   │
+│   ReAct loop            │  • Runs bandit security scan      │   │
+│   + E2B tools           │  • Scans for hardcoded secrets    │   │
+│        │                │  • APPROVED or NEEDS_REVISION     │   │
+│        └──────► SUPERVISOR                                  │   │
+│                │                                            │   │
+│        ┌───────┴────────┐                                   │   │
+│        ▼                │                                   │   │
+│   [PR CREATOR]          │  • Opens draft PR on GitHub       │   │
+│        │                │  • Posts completion comment       │   │
+│       END ◄─────────────┘  • Closes E2B sandbox             │   │
+└──────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+WebSocket stream ──► Next.js dashboard (live agent thought feed)
+PostgreSQL       ──► Run history, agent logs, PR links
 ```
 
 **Key design decisions:**
 
-- **Deterministic supervisor** — routing is pure Python (`if/else` on `state["phase"]`), not an LLM call. This makes the control flow predictable and debuggable.
-- **ReAct pattern per agent** — each agent runs a Reason → Act → Observe loop with tool calls until it reaches a conclusion, not a single-shot prompt.
-- **E2B cloud sandboxes** — code runs in an isolated Linux VM, not the host machine. Sandboxes are long-lived (30 min) and keyed by `run_id` so they survive across multiple agent steps.
-- **Push before sandbox dies** — the coder node pushes to GitHub immediately after committing, before handing back to the supervisor. Eliminates the "not a git repo" failure mode from sandbox timeout.
-- **WebSocket pub/sub** — every agent thought, tool call, and result streams to the frontend in real time via a per-run-id connection manager.
+**Deterministic supervisor** — routing is pure Python `if/else` on `state["phase"]`, never an LLM call. The control flow is predictable and debuggable. No prompt-based routing that can hallucinate a wrong next step.
+
+**ReAct per agent** — each agent runs Reason → Act → Observe loops with real tool calls until it reaches a conclusion, not a single-shot prompt. The coder can call `search_web()`, read the result, call `fetch_url()` on a docs page, read that, then write the code — all in one pass.
+
+**Context injection before reasoning** — the architect receives the full repo file tree automatically before its ReAct loop starts. It doesn't waste tool calls on blind exploration; it already knows what exists and reads only the relevant files.
+
+**Push before sandbox timeout** — git push happens inside `coder_node` immediately after commit, while the sandbox is warm. The PR node does a safety-net retry. Eliminates the "not a git repo" class of failures from sandbox expiry.
+
+**Auto-recovery** — if tests fail with `ModuleNotFoundError`, the system installs the package and retries without counting it as an iteration.
+
+---
+
+## Tool Arsenal
+
+### E2B Sandbox Tools (15 tools)
+
+| Tool | What it does |
+|---|---|
+| `setup_workspace()` | Clones repo, installs deps (pip/npm/go/cargo auto-detected) |
+| `write_file(path, content)` | Write any file relative to `/workspace` |
+| `read_file(path)` | Read any file in the sandbox |
+| `list_files(path)` | Directory listing |
+| `find_in_files(pattern, extensions)` | **grep across entire codebase** — finds existing patterns before writing |
+| `search_web(query)` | **Live DuckDuckGo search** — looks up docs, errors, best practices |
+| `fetch_url(url)` | **Fetches any webpage** — reads official docs, Stack Overflow, READMEs |
+| `install_package(name)` | pip/npm install inside sandbox |
+| `run_command(cmd)` | Arbitrary shell command from `/workspace` |
+| `run_linter()` | flake8 / eslint / go vet — catches errors before commit |
+| `run_tests()` | pytest / npm test / go test / cargo test — auto-detected |
+| `run_security_scan()` | bandit + hardcoded secret pattern scan |
+| `get_git_diff()` | Full diff of all changes |
+| `git_commit_all(message)` | Stage + commit everything |
+| `git_push(branch)` | Push to GitHub with auth |
+
+### GitHub API Tools (10 tools)
+
+| Tool | What it does |
+|---|---|
+| `get_full_repo_context()` | **Full file tree + key config files in one call** |
+| `get_issue_comments(number)` | Fetch all issue comments for extra context |
+| `get_file_contents(path)` | Read any file from GitHub |
+| `list_directory(path)` | Browse repo structure |
+| `search_code(query)` | GitHub code search |
+| `get_repo_structure(depth)` | Tree view |
+| `create_branch(name)` | Branch off default branch |
+| `create_pull_request(...)` | Opens draft PR, auto-detects default branch |
+| `add_issue_comment(number, body)` | Post comments on issues |
+| `create_or_update_file(...)` | Direct file commits via API |
 
 ---
 
@@ -83,14 +140,16 @@ GitHub Issue
 
 | Layer | Technology | Why |
 |---|---|---|
-| **Agent orchestration** | LangGraph StateGraph | Explicit state machine with conditional routing — not a black-box chain |
-| **LLM** | Groq + Llama 3.3 70B | Free-tier inference at 500 tokens/sec — fast enough for real-time streaming |
-| **Code execution** | E2B cloud sandboxes | Isolated Linux VM per run — safe, reproducible, no host contamination |
-| **Backend** | FastAPI + async SQLAlchemy | Async throughout — WebSocket + HTTP from one process |
-| **Database** | PostgreSQL 16 | Run history, agent logs, persistent across restarts |
-| **Real-time** | WebSocket (native FastAPI) | Per-run pub/sub — frontend sees every agent thought live |
-| **Frontend** | Next.js 14 App Router | Client components only where needed (polling, WebSocket) |
-| **Deployment** | Docker Compose | Three services, one command |
+| Agent orchestration | LangGraph StateGraph | Explicit state machine — not a black-box chain. Deterministic routing. |
+| LLM | Groq + Llama 3.3 70B | ~500 tok/s inference — fast enough for real-time streaming. Free tier. |
+| Code execution | E2B cloud sandboxes | Isolated Linux VM per run. 30-min timeout. No host contamination. |
+| Web search | DuckDuckGo API | No API key needed. Runs inside the sandbox via urllib. |
+| Backend | FastAPI + async SQLAlchemy | Fully async — WebSocket + HTTP from one process. |
+| Database | PostgreSQL 16 | Run history + agent logs. Persistent across restarts. |
+| Real-time | WebSocket pub/sub | Per-run ConnectionManager. Frontend sees every agent thought live. |
+| Auth | GitHub App + HMAC-SHA256 | Production-grade webhook validation. JWT → installation token exchange. |
+| Frontend | Next.js 14 App Router | Client components only where needed. Auto-polls 3s when runs are live. |
+| Deployment | Docker Compose | Three services, one command. |
 
 ---
 
@@ -101,27 +160,27 @@ devops-swarm/
 ├── backend/
 │   └── app/
 │       ├── agents/
-│       │   ├── graph.py        # LangGraph StateGraph definition
-│       │   ├── nodes.py        # ReAct loop, 4 agent nodes
+│       │   ├── graph.py        # LangGraph StateGraph — 5 nodes, conditional edges
+│       │   ├── nodes.py        # ReAct loops, context injection, auto-recovery
 │       │   ├── prompts.py      # System prompts per agent
-│       │   └── state.py        # Shared TypedDict state
+│       │   └── state.py        # Shared TypedDict — 18 fields
 │       ├── tools/
-│       │   ├── github_tools.py # GitHub API: read repo, create branch, open PR
-│       │   └── e2b_tools.py    # Sandbox: write/run code, git operations
+│       │   ├── e2b_tools.py    # 15 sandbox tools incl. search_web, fetch_url
+│       │   └── github_tools.py # 10 GitHub API tools incl. get_full_repo_context
 │       ├── db/
 │       │   ├── models.py       # Run + AgentLog SQLAlchemy models
-│       │   └── database.py     # Async engine + session factory
-│       ├── ws_manager.py       # WebSocket connection manager (pub/sub)
-│       ├── webhooks.py         # GitHub webhook + /trigger test endpoint
-│       └── main.py             # FastAPI app, lifespan, CORS
+│       │   └── database.py     # Async engine, session factory
+│       ├── ws_manager.py       # WebSocket ConnectionManager (pub/sub per run)
+│       ├── webhooks.py         # GitHub webhook — HMAC validation, dispatch
+│       └── main.py             # FastAPI app, /trigger, /runs, /ws endpoints
 ├── frontend/
 │   └── src/
 │       ├── app/
-│       │   ├── page.tsx        # Dashboard — stats + activity feed + run table
-│       │   └── runs/[id]/      # Run detail — live agent stream
+│       │   ├── page.tsx        # Dashboard — stats row + timeline feed + run table
+│       │   └── runs/[id]/      # Run detail — live WebSocket agent stream
 │       └── components/
-│           ├── AgentStream.tsx # WebSocket terminal (live + archived)
-│           ├── RunHistory.tsx  # Timeline feed + compact table
+│           ├── AgentStream.tsx # Terminal-style live log viewer
+│           ├── RunHistory.tsx  # Timeline cards + compact table
 │           ├── TriggerModal.tsx
 │           └── StatusBadge.tsx
 ├── docker-compose.yml
@@ -132,101 +191,102 @@ devops-swarm/
 
 ## Quickstart
 
-**Requirements:** Docker Desktop, a Groq API key (free), an E2B API key (free), a GitHub PAT.
+**Requirements:** Docker Desktop, Groq API key (free), E2B API key (free), GitHub PAT.
 
 ```bash
-# 1. Clone
 git clone https://github.com/Sowaiba-01/Devops-swarm.git
 cd Devops-swarm
-
-# 2. Configure
 cp .env.example .env
-# Edit .env — fill in GROQ_API_KEY, E2B_API_KEY, GITHUB_PAT
-
-# 3. Run
+# Fill in GROQ_API_KEY, E2B_API_KEY, GITHUB_PAT
 docker compose up --build
 ```
 
-Open **http://localhost:3000** → click **[ RUN SWARM ]** → enter your GitHub repo + any open issue → watch the agents work in real time.
+Open **http://localhost:3000** → click **[ RUN SWARM ]** → fill in your repo + issue → watch every agent thought stream live.
 
-**Getting free API keys:**
-- Groq: [console.groq.com](https://console.groq.com) → API Keys → Create (free, 14,400 req/day)
-- E2B: [e2b.dev](https://e2b.dev) → Dashboard → API Keys (free tier available)
+**Free API keys:**
+- Groq: [console.groq.com](https://console.groq.com) → API Keys → Create (free, fast)
+- E2B: [e2b.dev](https://e2b.dev) → Dashboard → API Keys
 - GitHub PAT: Settings → Developer Settings → Tokens (classic) → check `repo` + `workflow`
 
 ---
 
-## How the self-correction loop works
-
-The coder node doesn't just write code and hope. After each write, it runs the test suite and reads the output:
+## API Reference
 
 ```
-Iteration 1:
-  write_file("auth.py", ...) → run_tests() → "FAILED: assertion error line 42"
-  → Read error → fix the code → run_tests() again
-
-Iteration 2:
-  write_file("auth.py", fixed version) → run_tests() → "passed 12/12"
-  → git_commit_all("fix: auth token refresh") → git_push(branch)
+POST /trigger              Fire a run manually (uses GITHUB_PAT, no webhook needed)
+POST /webhook              GitHub App webhook (HMAC-SHA256 validated)
+GET  /runs                 List all runs (paginated, ?status= filter)
+GET  /runs/{id}            Run detail with full metadata
+GET  /runs/{id}/logs       All stored agent logs for a run
+WS   /ws/{run_id}          Real-time WebSocket agent event stream
+GET  /health               Health check
 ```
-
-If all 3 iterations fail, the PR is still opened — with the failing test output attached — so a human can take over with full context.
 
 ---
 
 ## Live Agent Stream
 
-Every event in the swarm is streamed to the frontend over WebSocket:
+Every event streams to the dashboard in real time over WebSocket:
 
 ```
-08:14:22  [architect]  THOUGHT   I need to first understand the repo structure...
-08:14:23  [architect]  TOOL▸     list_directory("")
-08:14:24  [architect]  RESULT    📁 src  📄 requirements.txt  📄 README.md
-08:14:31  [architect]  THOUGHT   The issue requires adding rate limiting...
-08:14:55  [coder]      TOOL▸     setup_workspace()
-08:14:58  [coder]      RESULT    Cloned owner/repo to /workspace. Installed Python deps.
-08:15:12  [coder]      TOOL▸     write_file("middleware/rate_limit.py", ...)
-08:15:44  [coder]      TOOL▸     run_tests()
-08:15:51  [coder]      RESULT    passed 14/14 ✓
+08:14:21  [architect]  THOUGHT   Fetching full repository context...
+08:14:24  [architect]  TOOL▸     get_full_repo_context()
+08:14:26  [architect]  RESULT    REPOSITORY: owner/repo | TOTAL FILES: 47 | FILE TREE: ...
+08:14:27  [architect]  TOOL▸     get_file_contents("src/middleware/auth.py")
+08:14:29  [architect]  THOUGHT   The issue requires adding rate limiting. I'll modify...
+08:14:55  [architect]  STATUS    Implementation plan posted as GitHub comment.
+08:15:01  [coder]      TOOL▸     setup_workspace()
+08:15:04  [coder]      RESULT    Cloned owner/repo. Installed Python deps.
+08:15:05  [coder]      TOOL▸     find_in_files("def authenticate", "py")
+08:15:06  [coder]      RESULT    src/auth.py:14: def authenticate(token: str) -> User:
+08:15:08  [coder]      TOOL▸     search_web("fastapi rate limiting middleware 2024")
+08:15:10  [coder]      RESULT    SUMMARY: slowapi is the recommended rate limiting...
+08:15:11  [coder]      TOOL▸     fetch_url("https://slowapi.readthedocs.io/en/latest/")
+08:15:14  [coder]      RESULT    SlowAPI — A rate limiting extension for FastAPI...
+08:15:44  [coder]      TOOL▸     write_file("src/middleware/rate_limit.py", ...)
+08:15:46  [coder]      TOOL▸     run_linter()
+08:15:48  [coder]      RESULT    exit_code: 0  (no issues)
+08:15:49  [coder]      TOOL▸     git_commit_all("feat: add rate limiting middleware")
+08:15:52  [coder]      TOOL▸     run_tests()
+08:15:59  [coder]      RESULT    passed 14/14
 08:16:03  [reviewer]   TOOL▸     get_git_diff()
-08:16:22  [reviewer]   THOUGHT   The changes look clean. No hardcoded secrets...
-08:16:30  [pr]         RESULT    PR #8 created: https://github.com/owner/repo/pull/8
+08:16:18  [reviewer]   TOOL▸     run_security_scan()
+08:16:24  [reviewer]   THOUGHT   No hardcoded secrets. No SQL injection risk...
+08:16:31  [reviewer]   STATUS    Verdict: APPROVED
+08:16:35  [system]     STATUS    PR #9 created: https://github.com/owner/repo/pull/9
+08:16:36  [system]     STATUS    Success comment posted on GitHub issue.
 ```
 
 ---
 
-## API
+## Engineering Challenges Solved
 
-```
-POST /trigger          Fire a run without a GitHub webhook (for testing)
-GET  /runs             List all runs (last 30 by default)
-GET  /runs/{id}        Get a single run with full metadata
-GET  /runs/{id}/logs   Get all stored agent logs for a run
-WS   /ws/{run_id}      WebSocket stream — real-time agent events
-POST /webhook          GitHub webhook endpoint (for production use)
-```
+**E2B sandbox timeout** — Sandboxes timeout between agent steps if the gap is too long. Fixed with: 30-minute timeout, module-level sandbox dict keyed by `run_id` so the same instance is reused, and git push happening inside `coder_node` immediately after commit while the sandbox is warm.
 
----
+**Groq malformed tool calls** — Llama 3.3 generates `<function=name{...}>` syntax when it writes prose before calling a tool. Fixed by: all prompts open with "Call tools immediately, no prose first", and `_react_loop()` catches `BadRequestError` and injects a corrective retry message.
 
-## Engineering challenges solved
+**main vs master branch** — PR creation fails with 422 if the base branch is wrong. Fixed by auto-detecting `default_branch` from the GitHub repo API before creating the PR.
 
-**E2B sandbox timeout** — Sandboxes die between agent node calls if the gap is too long. Fixed with: (1) 30-minute sandbox timeout, (2) module-level sandbox dict keyed by `run_id` so the same instance is reused across nodes, (3) git push happens inside `coder_node` right after commit while the sandbox is warm — not in the PR node minutes later.
+**No web access** — the biggest limitation of earlier AI agents. Fixed by `search_web()` (DuckDuckGo, no API key) and `fetch_url()` (urllib inside the sandbox) — the coder can now read any documentation page during execution.
 
-**Groq malformed tool calls** — Llama 3.3 occasionally generates `<function=name{...}>` syntax when the model writes a long prose response before calling a tool. Fixed with: (1) all prompts start with "Call tools immediately. Do NOT write any explanation before your first tool call.", (2) `_react_loop()` catches `BadRequestError` and injects a corrective message to retry.
+**Missing package failures** — tests fail with `ModuleNotFoundError` when the plan requires a package not in requirements.txt. Fixed by auto-detecting the error pattern and calling `install_package()` automatically before retrying.
 
-**GitHub `main` vs `master`** — PR creation fails with 422 if the base branch is wrong. Fixed by auto-detecting `default_branch` from the GitHub repo API before creating the PR.
-
-**Async E2B SDK in async FastAPI** — E2B's Python SDK is synchronous. Wrapping every call in `asyncio.to_thread()` prevents blocking the event loop.
+**Blind codebase exploration** — agents wasted ReAct iterations doing `list_directory("")` → `list_directory("src")` → `list_directory("src/utils")`. Fixed by `get_full_repo_context()` which returns the complete file tree + key config files in one API call, injected before the ReAct loop starts.
 
 ---
 
-## What I'd build next
+## GitHub App Setup (Production)
 
-- **GitHub App webhook** — trigger automatically when an issue is labeled `swarm` instead of manually calling `/trigger`
-- **Slack / Discord notification** — post the PR link to a channel when done
-- **Multi-repo queue** — run parallel swarms across multiple repos with a job queue (Celery or ARQ)
-- **Cost tracking** — log Groq token usage per run for budget visibility
-- **Eval harness** — benchmark the swarm on a fixed set of synthetic issues to track quality regressions
+To trigger automatically when issues are opened (no manual button):
+
+1. Deploy to Railway/Render — get a public URL
+2. Register at **github.com/settings/apps** → set webhook URL to `https://your-url/webhook`
+3. Permissions: Issues (read), Contents (read+write), Pull Requests (read+write)
+4. Subscribe to: `Issues` events
+5. Generate private key → add to `.env` as `GITHUB_PRIVATE_KEY`
+6. Install on any repo → open an issue → swarm runs automatically
+
+This is the same architecture used by Dependabot, GitHub Copilot, and Devin.
 
 ---
 
@@ -234,11 +294,11 @@ POST /webhook          GitHub webhook endpoint (for production use)
 
 **Sowaiba Arshad** — AI/ML Engineer
 
-Designed and implemented the full stack: LangGraph multi-agent topology, ReAct tool-calling loop, E2B sandbox integration, FastAPI async backend, WebSocket real-time streaming, and Next.js neon dashboard.
+Full-stack implementation: LangGraph multi-agent topology, ReAct tool-calling loops, E2B sandbox integration, live web search from within agents, async FastAPI backend, WebSocket real-time streaming, neon Next.js dashboard, Docker deployment.
 
-📧 sowaibaworkspace@gmail.com  
+📧 sowaibaworkspace@gmail.com
 🐙 [github.com/Sowaiba-01](https://github.com/Sowaiba-01)
 
 ---
 
-*This project demonstrates: multi-agent orchestration, LLM tool-use, cloud sandbox execution, async Python, real-time WebSocket streaming, and full-stack deployment with Docker.*
+*Demonstrates: multi-agent orchestration · LLM tool-use with web access · cloud sandbox code execution · async Python · real-time WebSocket streaming · GitHub App webhook integration · full-stack Docker deployment*

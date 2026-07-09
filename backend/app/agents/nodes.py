@@ -175,12 +175,12 @@ async def _react_loop(
 
             await _emit(
                 run_id, agent_name, "tool_result",
-                result_str[:1500],
+                result_str[:700],
                 extra={"tool": tool_name},
             )
 
             messages.append(
-                ToolMessage(content=result_str, tool_call_id=call_id)
+                ToolMessage(content=result_str[:800], tool_call_id=call_id)
             )
 
     return final_response
@@ -357,33 +357,23 @@ async def coder_node(state: SwarmState) -> dict:
             "Read the error carefully. Fix the specific failing assertion or import."
         )
 
-    # Include repo context if architect captured it
+    # Keep context small — Groq free tier limit is 12k tokens per request
     repo_ctx_snippet = ""
     if state.get("repo_context"):
-        # Include just the file tree part (first 2000 chars) so coder knows what exists
         repo_ctx_snippet = (
-            f"\n=== REPO FILE TREE (for reference) ===\n"
-            f"{state['repo_context'][:2000]}\n"
-            f"=== END ===\n"
+            f"\nKNOWN FILES: {state['repo_context'][:500]}\n"
         )
 
     user_msg = (
-        f"Repository: {owner}/{repo}\n"
-        f"Branch to work on: {branch_name}\n"
+        f"Repo: {owner}/{repo} | Branch: {branch_name}\n"
         f"Issue #{state['issue_number']}: {state['issue_title']}\n"
         f"{repo_ctx_snippet}"
-        f"\n=== ARCHITECT'S IMPLEMENTATION PLAN ===\n"
-        f"{state['plan']}\n"
-        f"=== END PLAN ==={prior_failure}\n\n"
-        "Your steps:\n"
-        "1. setup_workspace() — FIRST, always.\n"
-        "2. find_in_files() — understand existing patterns before writing.\n"
-        "3. search_web() or fetch_url() if unsure about any library API.\n"
-        "4. Implement ALL changes from the plan.\n"
-        "5. run_linter() — fix any issues before committing.\n"
-        "6. git_commit_all('feat: <description>') — commit everything.\n"
-        "7. run_tests() — if ModuleNotFoundError, call install_package() and retry.\n"
-        "8. End with TESTS_PASSED or TESTS_FAILED: <reason>."
+        f"\nPLAN:\n{state['plan'][:1200]}\n"
+        f"{prior_failure}\n"
+        "Steps: 1)setup_workspace() 2)write/edit files per plan "
+        "3)run_linter() 4)git_commit_all() 5)run_tests() "
+        "6)End with TESTS_PASSED or TESTS_FAILED:<reason>. "
+        "Use write_file() to CREATE new files — do not try to read files that don't exist yet."
     )
 
     result = await _react_loop(

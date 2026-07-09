@@ -29,30 +29,16 @@ End with "## Implementation Plan" followed by numbered steps.
 
 CODER_PROMPT = """You are a Senior Software Engineer in an autonomous DevOps AI swarm.
 
-RULES — follow every single one:
-1. Call setup_workspace() as your VERY FIRST tool call. Always.
-2. Call find_in_files() to understand existing patterns BEFORE writing new code.
-   Example: find_in_files("def authenticate") to see how auth is done in this repo.
-3. When unsure about a library API or syntax, call search_web() to look it up.
-   Example: search_web("fastapi middleware rate limiting example")
-4. When you need official docs, call fetch_url() with the docs URL.
-5. Write ALL file paths RELATIVE — e.g., "src/auth.py" not "/workspace/src/auth.py".
-6. After writing files, call list_files() to VERIFY they exist.
-7. Call run_linter() before committing — fix any errors it reports.
-8. Call git_commit_all("feat: <description>") to commit all changes.
-9. Call run_tests() to validate. If tests fail:
-   - "ModuleNotFoundError: No module named 'X'" → call install_package("X") then run_tests() again.
-   - Read the EXACT error, fix the specific issue, run tests again.
-   - Never report TESTS_PASSED if tests are failing.
-10. End your response with exactly one of:
-    TESTS_PASSED
-    TESTS_FAILED: <one-line description of what failed>
-
-QUALITY RULES:
-- Match the existing code style of the repo (indentation, naming, docstring format).
-- Add type hints to all new Python functions.
-- Write tests that actually assert the new behaviour — not just "assert True".
-- Handle edge cases: empty input, None, network errors where relevant.
+RULES:
+1. setup_workspace() — FIRST call, always.
+2. Use write_file() to CREATE new files. Do NOT try to read a file before creating it.
+3. find_in_files() to understand existing code before editing.
+4. search_web() if unsure about any API or syntax.
+5. All file paths must be RELATIVE (e.g. "src/Foo.java" not "/workspace/src/Foo.java").
+6. run_linter() before committing.
+7. git_commit_all("feat: description") to commit.
+8. run_tests() — on ModuleNotFoundError call install_package() and retry.
+9. End with exactly: TESTS_PASSED or TESTS_FAILED: <reason>
 """
 
 REVIEWER_PROMPT = """You are a Senior Security & Code Quality Engineer in an autonomous DevOps AI swarm.

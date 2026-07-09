@@ -116,6 +116,8 @@ async def _react_loop(
     ]
 
     final_response = ""
+    malformed_retries = 0
+    MAX_MALFORMED_RETRIES = 3
 
     for step in range(MAX_REACT_ITERATIONS):
         try:
@@ -123,12 +125,20 @@ async def _react_loop(
         except Exception as llm_err:
             err_str = str(llm_err)
             if "tool_use_failed" in err_str or "failed_generation" in err_str:
+                malformed_retries += 1
+                if malformed_retries > MAX_MALFORMED_RETRIES:
+                    await _emit(run_id, agent_name, "status",
+                                f"Too many malformed tool calls ({malformed_retries}). Stopping.")
+                    break
+                # Pick the first available tool name to give the model a concrete target
+                first_tool = tools[0].name if tools else "a tool"
                 await _emit(run_id, agent_name, "status",
-                            "LLM generated malformed tool call — retrying with strict prompt...")
+                            f"LLM generated malformed tool call — retrying ({malformed_retries}/{MAX_MALFORMED_RETRIES})...")
                 messages.append(HumanMessage(
-                    content="Your previous response had a malformed tool call. "
-                            "You MUST call tools using the proper JSON function-call format only. "
-                            "Do NOT write any prose before calling a tool. Call a tool now."
+                    content=f"Your previous response had a malformed tool call. "
+                            f"You MUST use proper JSON function-call format. "
+                            f"Do NOT write any prose. "
+                            f"Call `{first_tool}` right now with the correct arguments."
                 ))
                 continue
             raise

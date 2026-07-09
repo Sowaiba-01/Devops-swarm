@@ -298,7 +298,7 @@ except Exception as e:
     def run_linter() -> str:
         """
         Run a static linter on the workspace to catch syntax errors, unused imports,
-        and style issues BEFORE committing. Auto-detects Python/JS/TS/Go.
+        and style issues BEFORE committing. Auto-detects Python/JS/TS/Go/Java.
         Always run this before git_commit_all().
         """
         ls_result = _run(f"ls {WORKSPACE}")
@@ -323,6 +323,13 @@ except Exception as e:
             return _run(f"cd {WORKSPACE} && go vet ./... 2>&1")
         elif "cargo.toml" in files or "Cargo.toml" in ls_result:
             return _run(f"cd {WORKSPACE} && cargo check 2>&1 | head -40", timeout=120)
+        # Java — compile to catch syntax errors
+        java_files = _run(f"find {WORKSPACE} -name '*.java' 2>/dev/null | head -5")
+        if java_files.strip() and "No such file" not in java_files:
+            _run("mkdir -p /tmp/java_lint_out")
+            return _run(
+                f"find {WORKSPACE} -name '*.java' | xargs javac -d /tmp/java_lint_out 2>&1 | head -50"
+            )
         return "No recognisable project type — skipping linter."
 
     # ------------------------------------------------------------------ #
@@ -339,20 +346,55 @@ except Exception as e:
     def run_tests() -> str:
         """
         Auto-detect and run the project test suite.
-        Returns full output including pass/fail counts and error details.
+        Supports Python/pytest, Node/npm, Go, Rust, Maven, Gradle, and raw Java/JUnit.
         If tests fail with ModuleNotFoundError, use install_package() then retry.
         """
         ls_result = _run(f"ls {WORKSPACE}")
         files = ls_result.lower()
 
-        if "pytest" in _run("cd /workspace && pip show pytest 2>/dev/null"):
-            return _run(f"cd {WORKSPACE} && pytest --tb=short -q 2>&1", timeout=300)
+        # Maven
+        if "pom.xml" in files:
+            return _run(f"cd {WORKSPACE} && mvn test -q 2>&1 | tail -40", timeout=300)
+        # Gradle
+        if "build.gradle" in files or "build.gradle.kts" in files:
+            return _run(f"cd {WORKSPACE} && gradle test 2>&1 | tail -40", timeout=300)
+        # Python
+        if "requirements.txt" in files or any(f.endswith(".py") for f in ls_result.split()):
+            return _run(f"cd {WORKSPACE} && python -m pytest --tb=short -q 2>&1", timeout=300)
+        # Node
         if "package.json" in files:
             return _run(f"cd {WORKSPACE} && npm test -- --watchAll=false 2>&1", timeout=300)
+        # Go
         if "go.mod" in files:
             return _run(f"cd {WORKSPACE} && go test ./... 2>&1", timeout=300)
+        # Rust
         if "cargo.toml" in files or "Cargo.toml" in ls_result:
             return _run(f"cd {WORKSPACE} && cargo test 2>&1", timeout=300)
+        # Raw Java — download JUnit standalone and run
+        java_files = _run(f"find {WORKSPACE} -name '*.java' 2>/dev/null | head -3")
+        if java_files.strip() and "No such file" not in java_files:
+            JUNIT_JAR = "/tmp/junit-standalone.jar"
+            jar_check = _run(f"test -f {JUNIT_JAR} && echo EXISTS || echo MISSING")
+            if "MISSING" in jar_check:
+                _run(
+                    f"wget -q -O {JUNIT_JAR} "
+                    "https://repo1.maven.org/maven2/org/junit/platform/"
+                    "junit-platform-console-standalone/1.10.2/"
+                    "junit-platform-console-standalone-1.10.2.jar",
+                    timeout=60,
+                )
+            _run("mkdir -p /tmp/java_test_out")
+            compile_result = _run(
+                f"find {WORKSPACE} -name '*.java' | "
+                f"xargs javac -cp {JUNIT_JAR} -d /tmp/java_test_out 2>&1"
+            )
+            if "error:" in compile_result.lower():
+                return f"Compilation failed:\n{compile_result[:600]}"
+            return _run(
+                f"java -jar {JUNIT_JAR} "
+                f"--class-path /tmp/java_test_out --scan-class-path 2>&1 | tail -40",
+                timeout=120,
+            )
         return _run(f"cd {WORKSPACE} && python -m pytest --tb=short -q 2>&1", timeout=300)
 
     # ------------------------------------------------------------------ #

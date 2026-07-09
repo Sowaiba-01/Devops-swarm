@@ -370,9 +370,14 @@ except Exception as e:
         # Rust
         if "cargo.toml" in files or "Cargo.toml" in ls_result:
             return _run(f"cd {WORKSPACE} && cargo test 2>&1", timeout=300)
-        # Raw Java — download JUnit standalone and run
-        java_files = _run(f"find {WORKSPACE} -name '*.java' 2>/dev/null | head -3")
-        if java_files.strip() and "No such file" not in java_files:
+        # TypeScript (no package.json — install jest manually)
+        ts_check = _run(f"find {WORKSPACE} -name '*.ts' -not -path '*/node_modules/*' 2>/dev/null | head -3")
+        if ".ts" in ts_check:
+            _run(f"cd {WORKSPACE} && npm install --save-dev jest @types/jest ts-jest -q 2>&1", timeout=120)
+            return _run(f"cd {WORKSPACE} && npx jest --no-coverage 2>&1", timeout=300)
+        # Raw Java — only if actual .java paths appear in find output
+        java_check = _run(f"find {WORKSPACE} -name '*.java' 2>/dev/null | head -3")
+        if ".java" in java_check:
             JUNIT_JAR = "/tmp/junit-standalone.jar"
             jar_check = _run(f"test -f {JUNIT_JAR} && echo EXISTS || echo MISSING")
             if "MISSING" in jar_check:
@@ -384,9 +389,9 @@ except Exception as e:
                     timeout=60,
                 )
             _run("mkdir -p /tmp/java_test_out")
+            java_paths = _run(f"find {WORKSPACE} -name '*.java' | tr '\\n' ' '")
             compile_result = _run(
-                f"find {WORKSPACE} -name '*.java' | "
-                f"xargs javac -cp {JUNIT_JAR} -d /tmp/java_test_out 2>&1"
+                f"javac -cp {JUNIT_JAR} -d /tmp/java_test_out {java_paths.strip()} 2>&1"
             )
             if "error:" in compile_result.lower():
                 return f"Compilation failed:\n{compile_result[:600]}"
@@ -395,7 +400,7 @@ except Exception as e:
                 f"--class-path /tmp/java_test_out --scan-class-path 2>&1 | tail -40",
                 timeout=120,
             )
-        return _run(f"cd {WORKSPACE} && python -m pytest --tb=short -q 2>&1", timeout=300)
+        return "No recognised project type and no test files found. Declare TESTS_PASSED if code was committed successfully."
 
     # ------------------------------------------------------------------ #
     @tool

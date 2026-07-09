@@ -118,6 +118,9 @@ async def _react_loop(
     final_response = ""
     malformed_retries = 0
     MAX_MALFORMED_RETRIES = 3
+    last_tool_name = ""
+    same_tool_count = 0
+    MAX_SAME_TOOL = 3  # stop hammering the same tool repeatedly
 
     for step in range(MAX_REACT_ITERATIONS):
         try:
@@ -155,6 +158,21 @@ async def _react_loop(
             tool_name = tc["name"]
             tool_args = tc["args"]
             call_id = tc["id"]
+
+            # Break infinite same-tool loops
+            if tool_name == last_tool_name:
+                same_tool_count += 1
+            else:
+                same_tool_count = 1
+                last_tool_name = tool_name
+            if same_tool_count > MAX_SAME_TOOL:
+                await _emit(run_id, agent_name, "status",
+                            f"Stopped: `{tool_name}` called {same_tool_count}× in a row. Declare result now.")
+                messages.append(HumanMessage(
+                    content=f"You have called `{tool_name}` {same_tool_count} times in a row with the same result. "
+                            "Stop retrying. End your response now with TESTS_PASSED or TESTS_FAILED:<reason>."
+                ))
+                break
 
             await _emit(
                 run_id, agent_name, "tool_call",

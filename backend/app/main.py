@@ -1,15 +1,4 @@
-"""
-FastAPI application entry point.
 
-Endpoints:
-  POST /webhook              — GitHub App webhook (signature-validated, production)
-  POST /trigger              — Manual trigger for testing (uses GITHUB_PAT, no webhook needed)
-  GET  /runs                 — List all runs (paginated, supports ?status= filter)
-  GET  /runs/{run_id}        — Run detail
-  GET  /runs/{run_id}/logs   — Agent logs for a run
-  WS   /ws/{run_id}          — Real-time WebSocket stream for a run
-  GET  /health               — Health check
-"""
 
 import datetime
 import logging

@@ -7,7 +7,6 @@ export const metadata: Metadata = {
   title: "Swarm AI — Autonomous DevOps",
   description: "Multi-agent LangGraph swarm that autonomously resolves GitHub issues",
 };
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>

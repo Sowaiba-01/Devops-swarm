@@ -48,24 +48,33 @@ export default function Dashboard() {
   const total       = runs.length;
   const success     = runs.filter((r) => r.status === "success").length;
   const running     = runs.filter((r) => r.status === "running").length;
-  const failed      = runs.filter((r) => r.status === "failed").length;
   const successRate = total > 0 ? Math.round((success / total) * 100) : 0;
 
-  return (
-    <div className="space-y-5">
+  const stats = [
+    { label: "Total Runs",  value: total,           accent: "text-white/80" },
+    { label: "Resolved",    value: success,          accent: "text-emerald-400" },
+    { label: "Live",        value: running,          accent: "text-indigo-300" },
+    { label: "Success Rate",value: `${successRate}%`,
+      accent: successRate >= 80 ? "text-emerald-400" : successRate >= 50 ? "text-amber-400" : "text-red-400" },
+  ];
 
-      {/* Page header */}
+  return (
+    <div className="space-y-8">
+
+      {/* Hero header */}
       <div className="flex items-start justify-between">
         <div>
-          <div className="text-[9px] text-[#00ff8550] tracking-widest uppercase mb-1">// dashboard</div>
-          <h1 className="text-base font-bold text-white tracking-wider">
-            AUTONOMOUS DEVOPS SWARM
+          <p className="text-indigo-300/50 text-xs tracking-widest uppercase mb-2">
+            Agentic DevOps · LangGraph StateGraph
+          </p>
+          <h1 className="text-2xl font-bold gradient-text leading-tight">
+            DevOps Swarm AI
           </h1>
-          <p className="text-white/25 text-[10px] mt-0.5 tracking-wide">
-            Multi-agent LangGraph system that resolves GitHub issues autonomously.
+          <p className="text-white/35 text-sm mt-1.5 max-w-lg leading-relaxed">
+            Opens a GitHub issue — swarm reads it, writes code, runs tests, opens a PR. Fully autonomous.
             {running > 0 && (
-              <span className="ml-2 text-[#38bdf8] neon-pulse">
-                {running} agent{running > 1 ? "s" : ""} working now···
+              <span className="ml-2 text-indigo-300 pulse">
+                {running} agent{running > 1 ? "s" : ""} running now
               </span>
             )}
           </p>
@@ -73,59 +82,49 @@ export default function Dashboard() {
 
         <button
           onClick={() => setShowModal(true)}
-          className="border border-[#00ff8740] bg-[#00ff8710] hover:bg-[#00ff8720] text-[#00ff87] font-bold text-[10px] tracking-widest px-4 py-2 rounded-sm transition-all font-mono"
+          className="glass rounded-xl px-5 py-2.5 text-sm font-medium text-indigo-200
+                     border-indigo-500/30 hover:border-indigo-400/50 hover:bg-indigo-500/10
+                     transition-all duration-200"
         >
-          [ RUN SWARM ]
+          Run Swarm →
         </button>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {[
-          { label: "TOTAL", value: total,          color: "text-white/70",   border: "border-white/10" },
-          { label: "OK",    value: success,         color: "text-[#00ff87]", border: "border-[#00ff8740]", bg: "bg-[#00ff8708]" },
-          { label: "LIVE",  value: running,         color: "text-[#38bdf8]", border: "border-[#38bdf840]", bg: "bg-[#38bdf808]" },
-          { label: "RATE",  value: `${successRate}%`,
-            color: successRate >= 80 ? "text-[#00ff87]" : successRate >= 50 ? "text-[#f59e0b]" : "text-[#ff6b6b]",
-            border: "border-white/10" },
-        ].map((s) => (
-          <div
-            key={s.label}
-            className={`border rounded-sm p-4 ${s.border} ${(s as any).bg ?? ""}`}
-          >
-            <p className="text-[8px] text-white/25 tracking-[.18em] uppercase mb-2">{s.label}</p>
-            <p className={`text-3xl font-bold tabular-nums leading-none ${s.color}`}>{s.value}</p>
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {stats.map((s) => (
+          <div key={s.label} className="glass rounded-2xl p-5">
+            <p className="text-xs text-white/35 mb-2">{s.label}</p>
+            <p className={`text-3xl font-bold tabular-nums ${s.accent}`}>{s.value}</p>
           </div>
         ))}
       </div>
 
-      {/* Main panel */}
-      <div className="border border-[#00ff8718] rounded-md">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#00ff8715] bg-[#00ff8705]">
+      {/* Runs */}
+      <div className="glass rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
           <div className="flex items-center gap-3">
-            <span className="text-[9px] text-[#00ff8560] tracking-widest uppercase">// recent runs</span>
-            <div className="flex items-center gap-1">
-              <span className="h-1 w-1 rounded-full bg-[#00ff87] neon-pulse" />
-              <span className="text-[9px] text-[#00ff8540] font-mono">
-                auto-refresh {running > 0 ? "3s" : "10s"}
+            <span className="text-sm font-medium text-white/70">Recent Runs</span>
+            <div className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 pulse" />
+              <span className="text-xs text-indigo-300/50">
+                refreshing every {running > 0 ? "3s" : "10s"}
               </span>
             </div>
           </div>
-          <span className="text-[9px] text-white/15 font-mono">{total} total</span>
+          <span className="text-xs text-white/20">{total} total</span>
         </div>
 
-        <div className="p-4">
+        <div className="p-5">
           {loading ? (
-            <div className="flex items-center justify-center h-32 text-white/20 font-mono text-xs">
-              <span className="tracking-widest">// connecting to backend···</span>
+            <div className="flex items-center justify-center h-32 text-white/20 text-sm">
+              Connecting to backend…
             </div>
           ) : error ? (
-            <div className="bg-[#ff444408] border border-[#ff444425] rounded-sm p-4 text-[10px] text-[#ff6b6b] font-mono">
-              <p className="font-bold tracking-wider mb-1">ERROR: BACKEND UNREACHABLE</p>
-              <p className="text-[#ff6b6b60] mb-2">{error}</p>
-              <p className="text-white/20">
-                Run: <code className="text-[#38bdf8]">docker compose up --build</code>
-              </p>
+            <div className="glass rounded-xl p-5 border-red-500/20">
+              <p className="font-semibold text-red-400 mb-1 text-sm">Backend unreachable</p>
+              <p className="text-white/30 text-xs mb-2">{error}</p>
+              <code className="text-indigo-300 text-xs">docker compose up --build</code>
             </div>
           ) : (
             <RunHistory runs={runs} />
@@ -134,18 +133,23 @@ export default function Dashboard() {
       </div>
 
       {/* How it works */}
-      <div className="border border-white/5 rounded-sm p-4">
-        <div className="text-[9px] text-white/20 tracking-widest uppercase mb-3">// how it works</div>
+      <div className="glass rounded-2xl p-6">
+        <p className="text-xs text-white/35 uppercase tracking-widest mb-5">How the swarm works</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { agent: "ARCHITECT", color: "border-[#a855f730] text-[#a855f7]", desc: "Reads issue + repo structure. Produces a step-by-step implementation plan." },
-            { agent: "CODER",     color: "border-[#38bdf830] text-[#38bdf8]", desc: "Implements plan in E2B cloud sandbox. Runs tests. Self-corrects up to 3×." },
-            { agent: "REVIEWER",  color: "border-[#f59e0b30] text-[#f59e0b]", desc: "Reads the git diff. Runs security scan. Produces APPROVED or NEEDS_REVISION." },
-            { agent: "PR",        color: "border-[#00ff8730] text-[#00ff87]", desc: "Pushes branch to GitHub. Opens a draft PR with test results and review notes." },
+            { icon: "🏛", agent: "Architect", color: "text-violet-300", bg: "bg-violet-500/10 border-violet-500/20",
+              desc: "Reads repo context + issue. Posts implementation plan as GitHub comment." },
+            { icon: "⌨", agent: "Coder",     color: "text-indigo-300", bg: "bg-indigo-500/10 border-indigo-500/20",
+              desc: "Writes code in E2B sandbox. Searches web. Self-corrects up to 3×." },
+            { icon: "🔍", agent: "Reviewer",  color: "text-amber-300",  bg: "bg-amber-500/10 border-amber-500/20",
+              desc: "Reads diff. Runs security scan. Returns APPROVED or NEEDS_REVISION." },
+            { icon: "🔀", agent: "PR",        color: "text-emerald-300",bg: "bg-emerald-500/10 border-emerald-500/20",
+              desc: "Opens draft PR. Posts success comment on the original issue." },
           ].map((a) => (
-            <div key={a.agent} className={`border rounded-sm p-3 ${a.color.split(" ")[0]}`}>
-              <p className={`text-[9px] font-bold tracking-widest mb-2 ${a.color.split(" ")[1]}`}>{a.agent}</p>
-              <p className="text-[9px] text-white/30 leading-relaxed">{a.desc}</p>
+            <div key={a.agent} className={`rounded-xl p-4 border ${a.bg}`}>
+              <div className="text-xl mb-2">{a.icon}</div>
+              <p className={`text-xs font-semibold mb-1.5 ${a.color}`}>{a.agent}</p>
+              <p className="text-xs text-white/30 leading-relaxed">{a.desc}</p>
             </div>
           ))}
         </div>

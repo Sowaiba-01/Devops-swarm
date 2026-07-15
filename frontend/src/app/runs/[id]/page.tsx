@@ -12,14 +12,14 @@ function MetaField({ label, value, mono = false, link = false }: {
 }) {
   return (
     <div>
-      <p className="text-[8px] text-white/20 tracking-[.18em] uppercase mb-1">{label}</p>
+      <p className="text-[9px] text-white/25 tracking-widest uppercase mb-1.5">{label}</p>
       {link && value ? (
         <a href={value} target="_blank" rel="noopener noreferrer"
-           className="text-[#38bdf8] hover:text-[#38bdf8] text-[10px] underline underline-offset-2">
+           className="text-indigo-300 hover:text-indigo-200 text-[11px] underline underline-offset-2">
           View PR ↗
         </a>
       ) : (
-        <p className={`text-[10px] ${mono ? "font-mono text-[#00ff87]" : "text-white/60"} truncate`}>
+        <p className={`text-[11px] ${mono ? "font-mono text-indigo-300" : "text-white/60"} truncate`}>
           {value ?? "—"}
         </p>
       )}
@@ -52,17 +52,20 @@ export default function RunDetailPage() {
 
   if (error) {
     return (
-      <div className="bg-[#ff444408] border border-[#ff444425] rounded-sm p-6 text-[#ff6b6b] text-[10px] font-mono">
-        ERROR: Run not found or backend unreachable.
-        <button onClick={() => router.push("/")} className="ml-3 underline text-[#ff6b6b80]">← back</button>
+      <div className="glass rounded-2xl p-6 border-red-500/20">
+        <p className="text-red-400 text-sm font-medium mb-1">Run not found</p>
+        <p className="text-white/30 text-xs mb-3">Backend may be unreachable.</p>
+        <button onClick={() => router.push("/")} className="text-xs text-indigo-300 hover:text-indigo-200 underline underline-offset-2">
+          ← Dashboard
+        </button>
       </div>
     );
   }
 
   if (!run) {
     return (
-      <div className="flex items-center justify-center h-64 text-white/20 font-mono text-[10px] tracking-widest">
-        // loading run···
+      <div className="flex items-center justify-center h-64 text-white/20 text-sm">
+        Loading run…
       </div>
     );
   }
@@ -76,75 +79,71 @@ export default function RunDetailPage() {
   })();
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-[9px] text-white/20 font-mono tracking-wider">
-        <Link href="/" className="hover:text-[#00ff87] transition-colors">DASHBOARD</Link>
-        <span className="text-white/10">/</span>
-        <span className="text-[#00ff8760]">{id.slice(0, 8)}···</span>
+      <div className="flex items-center gap-2 text-[10px] text-white/25">
+        <Link href="/" className="hover:text-indigo-300 transition-colors">Dashboard</Link>
+        <span className="text-white/15">/</span>
+        <span className="text-indigo-300/60 font-mono">{id.slice(0, 8)}…</span>
       </div>
 
       {/* Run header */}
-      <div className="border border-[#00ff8720] rounded-sm p-5 bg-[#00ff8705]">
-        <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="glass rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-4 mb-5">
           <div className="flex-1 min-w-0">
-            <div className="text-[8px] text-[#00ff8550] tracking-widest uppercase mb-1">// run detail</div>
-            <h1 className="text-sm font-bold text-white tracking-wide leading-tight">
-              <span className="text-[#00ff8770] mr-2 font-mono">#{run.issue_number}</span>
+            <p className="text-[9px] text-white/25 tracking-widest uppercase mb-1.5">Run Detail</p>
+            <h1 className="text-sm font-bold text-white leading-tight">
+              <span className="text-white/30 font-mono mr-2">#{run.issue_number}</span>
               {run.issue_title}
             </h1>
-            <p className="text-[#00ff8750] font-mono text-[10px] mt-1">{run.repo}</p>
+            <p className="text-indigo-300/50 font-mono text-[11px] mt-1">{run.repo}</p>
           </div>
           <StatusBadge status={run.status} />
         </div>
 
-        {/* Meta grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-3 pt-4 border-t border-[#00ff8715]">
-          <MetaField label="Branch" value={run.branch_name} mono />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-4 pt-4 border-t border-white/[0.07]">
+          <MetaField label="Branch"     value={run.branch_name}               mono />
           <MetaField label="Iterations" value={`${run.iteration_count ?? 0} / 3`} />
-          <MetaField label="Duration" value={duration} />
+          <MetaField label="Duration"   value={duration} />
           <MetaField label="Pull Request" value={run.pr_url} link />
         </div>
 
-        {/* Error */}
         {run.error_message && (
-          <div className="mt-4 bg-[#ff444408] border border-[#ff444425] rounded-sm p-3 text-[10px] text-[#ff6b6b] font-mono">
-            ERROR: {run.error_message}
+          <div className="mt-4 glass rounded-xl p-3 border-red-500/20 bg-red-500/5">
+            <p className="text-[11px] text-red-400">{run.error_message}</p>
           </div>
         )}
 
-        {/* Success */}
         {run.status === "success" && run.pr_url && (
-          <div className="mt-4 bg-[#00ff8708] border border-[#00ff8730] rounded-sm p-3 flex items-center justify-between">
+          <div className="mt-4 glass rounded-xl p-4 border-emerald-500/25 flex items-center justify-between">
             <div>
-              <p className="text-[#00ff87] font-bold text-[10px] tracking-wider">SWARM COMPLETED SUCCESSFULLY</p>
-              <p className="text-[#00ff8760] text-[9px] mt-0.5">Draft PR is waiting for your review on GitHub.</p>
+              <p className="text-emerald-300 font-semibold text-sm">Swarm completed</p>
+              <p className="text-white/30 text-[11px] mt-0.5">Draft PR is waiting for your review on GitHub.</p>
             </div>
             <a
               href={run.pr_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="border border-[#00ff8740] bg-[#00ff8715] hover:bg-[#00ff8725] text-[#00ff87] text-[9px] font-bold tracking-widest px-3 py-1.5 rounded-sm transition-all font-mono whitespace-nowrap"
+              className="glass rounded-xl px-4 py-2 border-emerald-500/30 hover:border-emerald-400/50 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-300 text-xs font-semibold transition-all whitespace-nowrap"
             >
-              [ REVIEW PR ]
+              Review PR ↗
             </a>
           </div>
         )}
       </div>
 
       {/* Agent stream */}
-      <div className="border border-[#00ff8718] rounded-sm overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-[#00ff8715] bg-[#0a0a0a] flex items-center justify-between">
-          <span className="text-[9px] text-[#00ff8560] tracking-widest uppercase">// agent thought stream</span>
-          <div className="flex items-center gap-3 text-[8px] tracking-widest font-mono">
-            <span className="text-[#a855f7]">■ ARCHITECT</span>
-            <span className="text-[#38bdf8]">■ CODER</span>
-            <span className="text-[#f59e0b]">■ REVIEWER</span>
-            <span className="text-[#00ff87]">■ PR</span>
+      <div className="glass rounded-2xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-white/[0.07] flex items-center justify-between">
+          <span className="text-xs font-medium text-white/50">Agent Stream</span>
+          <div className="flex items-center gap-3 text-[9px]">
+            <span className="text-violet-400">■ Architect</span>
+            <span className="text-indigo-300">■ Coder</span>
+            <span className="text-amber-400">■ Reviewer</span>
+            <span className="text-emerald-400">■ PR</span>
           </div>
         </div>
-
         <div className="h-[560px]">
           <AgentStream runId={id} isLive={run.status === "running"} />
         </div>

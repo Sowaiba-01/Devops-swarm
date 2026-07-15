@@ -22,7 +22,19 @@ function relativeTime(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
-const AGENT_STEPS = ["ARCHITECT", "CODER", "REVIEWER", "PR"];
+const AGENT_STEPS = [
+  { name: "Architect", color: "violet" },
+  { name: "Coder",     color: "indigo" },
+  { name: "Reviewer",  color: "amber"  },
+  { name: "PR",        color: "emerald"},
+];
+
+const STEP_STYLES = {
+  violet:  { done: "border-violet-500/40 text-violet-300/80 bg-violet-500/10",  active: "border-violet-400/60 text-violet-300 bg-violet-500/15 pulse", pending: "border-white/8 text-white/20" },
+  indigo:  { done: "border-indigo-500/40 text-indigo-300/80 bg-indigo-500/10",  active: "border-indigo-400/60 text-indigo-300 bg-indigo-500/15 pulse", pending: "border-white/8 text-white/20" },
+  amber:   { done: "border-amber-500/40 text-amber-300/80 bg-amber-500/10",     active: "border-amber-400/60 text-amber-300 bg-amber-500/15 pulse",   pending: "border-white/8 text-white/20" },
+  emerald: { done: "border-emerald-500/40 text-emerald-300/80 bg-emerald-500/10",active:"border-emerald-400/60 text-emerald-300 bg-emerald-500/15 pulse",pending:"border-white/8 text-white/20"},
+};
 
 function AgentPipeline({ status, iterations }: { status: string; iterations: number }) {
   const completedSteps =
@@ -31,21 +43,19 @@ function AgentPipeline({ status, iterations }: { status: string; iterations: num
     status === "running" ? Math.min(iterations + 1, 4) : 0;
 
   return (
-    <div className="flex gap-1 mt-2">
-      {AGENT_STEPS.map((step, i) => {
-        const done    = i < completedSteps;
-        const active  = i === completedSteps - 1 && status === "running";
-        const failed  = status === "failed" && i === completedSteps - 1;
+    <div className="flex gap-1 mt-2.5">
+      {AGENT_STEPS.map(({ name, color }, i) => {
+        const done   = i < completedSteps;
+        const active = i === completedSteps - 1 && status === "running";
+        const failed = status === "failed" && i === completedSteps - 1;
+        const styles = STEP_STYLES[color as keyof typeof STEP_STYLES];
+        const cls    = failed  ? "border-red-500/30 text-red-400/60 bg-red-500/5" :
+                       active  ? styles.active :
+                       done    ? styles.done :
+                                 styles.pending;
         return (
-          <span
-            key={step}
-            className={`text-[8px] px-1.5 py-0.5 border rounded-sm tracking-wider font-bold
-              ${failed  ? "border-[#ff444430] text-[#ff6b6b70]" :
-                active  ? "border-[#38bdf840] text-[#38bdf8] neon-pulse" :
-                done    ? "border-[#00ff8730] text-[#00ff8780]" :
-                          "border-white/5 text-white/15"}`}
-          >
-            {step}{done && !active && !failed ? " ✓" : ""}
+          <span key={name} className={`text-[9px] px-2 py-0.5 border rounded-full font-medium transition-all ${cls}`}>
+            {name}{done && !active && !failed ? " ✓" : ""}
           </span>
         );
       })}
@@ -56,76 +66,64 @@ function AgentPipeline({ status, iterations }: { status: string; iterations: num
 export function RunHistory({ runs }: { runs: Run[] }) {
   if (runs.length === 0) {
     return (
-      <div className="text-center py-20 text-white/20">
-        <p className="text-[10px] tracking-widest uppercase mb-2">// no runs yet</p>
-        <p className="text-xs">Click <span className="text-[#00ff87]">[ RUN SWARM ]</span> to trigger your first run.</p>
+      <div className="text-center py-16 text-white/20">
+        <p className="text-xs mb-2">No runs yet</p>
+        <p className="text-[11px] text-white/15">Click <span className="text-indigo-300">Run Swarm →</span> to trigger your first run.</p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-0">
+    <div className="space-y-6">
       {/* Timeline feed */}
-      <div className="space-y-2 mb-6">
-        <div className="text-[9px] text-[#00ff8550] tracking-widest uppercase mb-3">// activity feed</div>
+      <div className="space-y-2">
         {runs.map((run, idx) => {
           const isLast = idx === runs.length - 1;
+          const dotColor =
+            run.status === "running" ? "border-indigo-400 bg-indigo-400 pulse" :
+            run.status === "success" ? "border-emerald-400 bg-emerald-400" :
+            run.status === "failed"  ? "border-red-500 bg-red-500/40" :
+                                       "border-white/20 bg-white/5";
+          const cardColor =
+            run.status === "running" ? "border-indigo-500/25 hover:border-indigo-400/40" :
+            run.status === "success" ? "border-emerald-500/20 hover:border-emerald-400/35" :
+            run.status === "failed"  ? "border-red-500/20 hover:border-red-400/35" :
+                                       "border-white/8 hover:border-white/15";
+          const titleColor =
+            run.status === "running" ? "text-indigo-300" :
+            run.status === "success" ? "text-emerald-300" :
+            run.status === "failed"  ? "text-red-400/70" :
+                                       "text-white/60";
+
           return (
             <div key={run.id} className={`relative pl-5 ${!isLast ? "timeline-line" : ""}`}>
-              {/* Timeline dot */}
-              <div
-                className={`absolute left-0 top-3.5 w-2.5 h-2.5 rounded-full border
-                  ${run.status === "running" ? "border-[#38bdf8] bg-[#38bdf8] neon-pulse" :
-                    run.status === "success" ? "border-[#00ff87] bg-[#00ff87]" :
-                    run.status === "failed"  ? "border-[#ff4444] bg-[#ff444440]" :
-                                              "border-white/20 bg-white/5"}`}
-              />
+              <div className={`absolute left-0 top-4 w-2.5 h-2.5 rounded-full border ${dotColor}`} />
 
               <Link href={`/runs/${run.id}`}>
-                <div
-                  className={`border rounded-md p-3 transition-all cursor-pointer
-                    ${run.status === "running" ? "border-[#38bdf835] bg-[#38bdf808] hover:border-[#38bdf860]" :
-                      run.status === "success" ? "border-[#00ff8728] bg-[#00ff8705] hover:border-[#00ff8750]" :
-                      run.status === "failed"  ? "border-[#ff444418] bg-[#ff44440a] hover:border-[#ff444435]" :
-                                                "border-white/8 bg-white/3 hover:border-white/15"}`}
-                >
+                <div className={`glass rounded-xl p-4 transition-all cursor-pointer ${cardColor}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-bold
-                          ${run.status === "running" ? "text-[#38bdf870]" :
-                            run.status === "success" ? "text-[#00ff8760]" :
-                            "text-[#ff6b6b60]"}`}>
-                          #{run.issue_number}
-                        </span>
-                        <span className={`text-xs font-semibold truncate
-                          ${run.status === "running" ? "text-[#38bdf8]" :
-                            run.status === "success" ? "text-[#00ff87]" :
-                            run.status === "failed"  ? "text-[#ff6b6b70]" :
-                            "text-white/60"}`}>
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-[10px] font-mono text-white/25">#{run.issue_number}</span>
+                        <span className={`text-xs font-semibold truncate ${titleColor}`}>
                           {run.issue_title.length > 60 ? run.issue_title.slice(0, 60) + "…" : run.issue_title}
                         </span>
                       </div>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className={`text-[9px] tracking-wider
-                          ${run.status === "running" ? "text-[#38bdf850]" :
-                            run.status === "success" ? "text-[#00ff8750]" :
-                            "text-[#ff6b6b40]"}`}>
-                          {run.repo}
-                        </span>
-                        <span className="text-white/10 text-[9px]">·</span>
-                        <span className="text-white/20 text-[9px]">{elapsed(run.created_at, run.completed_at)}</span>
-                        <span className="text-white/10 text-[9px]">·</span>
-                        <span className="text-white/20 text-[9px]">{relativeTime(run.created_at)}</span>
+                      <div className="flex items-center gap-2 text-[10px] text-white/25">
+                        <span className="font-mono">{run.repo}</span>
+                        <span className="text-white/10">·</span>
+                        <span>{elapsed(run.created_at, run.completed_at)}</span>
+                        <span className="text-white/10">·</span>
+                        <span>{relativeTime(run.created_at)}</span>
                         {run.pr_url && (
                           <>
-                            <span className="text-white/10 text-[9px]">·</span>
+                            <span className="text-white/10">·</span>
                             <a
                               href={run.pr_url}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
-                              className="text-[9px] text-[#38bdf8] hover:text-[#38bdf8] underline underline-offset-2"
+                              className="text-indigo-300 hover:text-indigo-200 underline underline-offset-2"
                             >
                               PR ↗
                             </a>
@@ -144,43 +142,43 @@ export function RunHistory({ runs }: { runs: Run[] }) {
       </div>
 
       {/* Compact table */}
-      <div className="border border-[#00ff8718] rounded-md overflow-hidden">
-        <div className="px-3 py-2 bg-[#00ff8708] border-b border-[#00ff8715]">
-          <span className="text-[9px] text-[#00ff8560] tracking-widest uppercase">// run table</span>
+      <div className="glass rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-white/[0.07]">
+          <span className="text-[10px] text-white/30 tracking-widest uppercase">All Runs</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-[10px]">
+          <table className="w-full text-[11px]">
             <thead>
-              <tr className="border-b border-white/5">
+              <tr className="border-b border-white/[0.06]">
                 {["Issue", "Repo", "Status", "Loops", "Time", "PR"].map((h) => (
-                  <th key={h} className="text-left px-3 py-2 text-[9px] text-white/20 tracking-widest uppercase font-semibold">{h}</th>
+                  <th key={h} className="text-left px-4 py-2.5 text-[9px] text-white/20 tracking-widest uppercase font-semibold">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {runs.map((run) => (
-                <tr key={run.id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
-                  <td className="px-3 py-2">
-                    <Link href={`/runs/${run.id}`} className="flex items-center gap-1.5">
-                      <span className="text-white/30">#{run.issue_number}</span>
-                      <span className={`font-semibold truncate max-w-[180px] block
-                        ${run.status === "running" ? "text-[#38bdf8]" :
-                          run.status === "success" ? "text-[#00ff87]" :
-                          run.status === "failed"  ? "text-[#ff6b6b70]" : "text-white/50"}`}>
+                <tr key={run.id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+                  <td className="px-4 py-2.5">
+                    <Link href={`/runs/${run.id}`} className="flex items-center gap-2">
+                      <span className="text-white/25 font-mono text-[10px]">#{run.issue_number}</span>
+                      <span className={`font-medium truncate max-w-[180px] block
+                        ${run.status === "running" ? "text-indigo-300" :
+                          run.status === "success" ? "text-emerald-300" :
+                          run.status === "failed"  ? "text-red-400/60" : "text-white/50"}`}>
                         {run.issue_title.length > 30 ? run.issue_title.slice(0, 30) + "…" : run.issue_title}
                       </span>
                     </Link>
                   </td>
-                  <td className="px-3 py-2 text-white/30 font-mono">{run.repo.split("/")[1] ?? run.repo}</td>
-                  <td className="px-3 py-2"><StatusBadge status={run.status} /></td>
-                  <td className="px-3 py-2 text-white/30 tabular-nums">
+                  <td className="px-4 py-2.5 text-white/30 font-mono text-[10px]">{run.repo.split("/")[1] ?? run.repo}</td>
+                  <td className="px-4 py-2.5"><StatusBadge status={run.status} /></td>
+                  <td className="px-4 py-2.5 text-white/30 tabular-nums">
                     {run.iteration_count ?? 0}<span className="text-white/15">/3</span>
                   </td>
-                  <td className="px-3 py-2 text-white/30 tabular-nums whitespace-nowrap">{elapsed(run.created_at, run.completed_at)}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-4 py-2.5 text-white/30 tabular-nums whitespace-nowrap">{elapsed(run.created_at, run.completed_at)}</td>
+                  <td className="px-4 py-2.5">
                     {run.pr_url ? (
                       <a href={run.pr_url} target="_blank" rel="noopener noreferrer"
-                         className="text-[#38bdf8] hover:text-[#38bdf8] underline underline-offset-2">
+                         className="text-indigo-300 hover:text-indigo-200 underline underline-offset-2">
                         ↗
                       </a>
                     ) : <span className="text-white/15">—</span>}

@@ -1,26 +1,24 @@
 type Status = "running" | "success" | "failed" | string;
 
-const config: Record<string, { border: string; text: string; bg: string; label: string; pulse: boolean }> = {
+const config: Record<string, { border: string; text: string; bg: string; label: string; dot?: string }> = {
   running: {
-    border: "border-[#38bdf840]",
-    bg:     "bg-[#38bdf808]",
-    text:   "text-[#38bdf8]",
-    label:  "LIVE",
-    pulse:  true,
+    border: "border-indigo-500/30",
+    bg:     "bg-indigo-500/10",
+    text:   "text-indigo-300",
+    label:  "Live",
+    dot:    "bg-indigo-400",
   },
   success: {
-    border: "border-[#00ff8740]",
-    bg:     "bg-[#00ff8708]",
-    text:   "text-[#00ff87]",
-    label:  "OK",
-    pulse:  false,
+    border: "border-emerald-500/30",
+    bg:     "bg-emerald-500/10",
+    text:   "text-emerald-400",
+    label:  "Done",
   },
   failed: {
-    border: "border-[#ff444430]",
-    bg:     "bg-[#ff44440a]",
-    text:   "text-[#ff6b6b]",
-    label:  "FAIL",
-    pulse:  false,
+    border: "border-red-500/30",
+    bg:     "bg-red-500/10",
+    text:   "text-red-400",
+    label:  "Failed",
   },
 };
 
@@ -28,18 +26,14 @@ export function StatusBadge({ status }: { status: Status }) {
   const c = config[status] ?? {
     border: "border-white/10",
     bg:     "bg-white/5",
-    text:   "text-white/40",
-    label:  status.toUpperCase(),
-    pulse:  false,
+    text:   "text-white/30",
+    label:  status,
   };
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 border rounded-sm text-[9px] font-bold tracking-widest
-        ${c.border} ${c.bg} ${c.text} ${c.pulse ? "neon-pulse" : ""}`}
-    >
-      {c.pulse && (
-        <span className="inline-block h-1 w-1 rounded-full bg-[#38bdf8] neon-pulse" />
-      )}
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium border ${c.border} ${c.bg} ${c.text}`}>
+      {c.dot && <span className={`w-1.5 h-1.5 rounded-full ${c.dot} pulse`} />}
+      {!c.dot && status === "success" && <span className="text-[8px]">✓</span>}
+      {!c.dot && status === "failed"  && <span className="text-[8px]">✕</span>}
       {c.label}
     </span>
   );

@@ -12,7 +12,6 @@ function elapsed(start: string | null, end: string | null): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
   return `${Math.floor(s / 3600)}h`;
 }
-
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);

@@ -1,11 +1,4 @@
-"""
-GitHub App tools.
 
-Provides a factory `make_github_tools(token, owner, repo)` that returns
-a list of LangChain @tool functions pre-bound to a specific installation
-token + repository.  Call `get_installation_token(installation_id)` once
-per run to obtain the token.
-"""
 
 import base64
 import time

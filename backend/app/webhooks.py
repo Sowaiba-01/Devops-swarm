@@ -1,11 +1,3 @@
-"""
-GitHub Webhook handler.
-
-Receives POST /webhook from GitHub, validates HMAC-SHA256 signature,
-then dispatches the swarm as a FastAPI background task.
-
-Only 'issues' events with action='opened' or 'reopened' are processed.
-"""
 
 import datetime
 import hashlib

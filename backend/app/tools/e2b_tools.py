@@ -84,12 +84,19 @@ def make_e2b_tools(run_id: str, token: str, owner: str, repo: str):
             return f"Workspace already set up at {WORKSPACE} (reusing existing clone)."
 
         clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
-        _run(f"rm -rf {WORKSPACE}")
-        result = _run(f"git clone {clone_url} {WORKSPACE} 2>&1", timeout=120)
 
-        verify = _run(f"test -d {WORKSPACE}/.git && echo GIT_OK || echo NO_GIT")
-        if "NO_GIT" in verify:
-            return f"CLONE FAILED — no .git directory found. Clone output: {result}"
+        # Retry up to 3 times — E2B sandbox may not be ready on first cold boot
+        clone_result = ""
+        for attempt in range(3):
+            _run(f"rm -rf {WORKSPACE} && mkdir -p {WORKSPACE}")
+            clone_result = _run(f"git clone {clone_url} {WORKSPACE} 2>&1", timeout=120)
+            verify = _run(f"test -d {WORKSPACE}/.git && echo GIT_OK || echo NO_GIT")
+            if "GIT_OK" in verify:
+                break
+            import time; time.sleep(4)  # wait for sandbox to fully boot
+
+        if "NO_GIT" in _run(f"test -d {WORKSPACE}/.git && echo GIT_OK || echo NO_GIT"):
+            return f"CLONE FAILED after 3 attempts. Last output: {clone_result}"
 
         _run(f'cd {WORKSPACE} && git config user.email "swarm@devops-bot.ai"')
         _run(f'cd {WORKSPACE} && git config user.name "DevOps Swarm"')

@@ -1,16 +1,6 @@
 # DevOps Swarm AI
 
-**Autonomous multi-agent system that resolves GitHub issues end-to-end — reads the issue, searches the web for docs, writes and tests code in an isolated cloud sandbox, self-corrects up to 3×, and opens a draft PR. Zero human input required.**
-
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-14-000000?style=flat-square&logo=next.js&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-4A90D9?style=flat-square)
-![Groq](https://img.shields.io/badge/Groq-Llama_3.3_70B-F55036?style=flat-square)
-![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?style=flat-square&logo=fastapi)
-![E2B](https://img.shields.io/badge/E2B-Cloud_Sandbox-FF6B35?style=flat-square)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql)
-
+Autonomous multi-agent system that resolves GitHub issues end-to-end — reads the issue, searches the web for docs, writes and tests code in an isolated cloud sandbox, self-corrects up to 3×, and opens a draft PR. Zero human input required.
 ---
 
 ## What it does
@@ -290,15 +280,3 @@ This is the same architecture used by Dependabot, GitHub Copilot, and Devin.
 
 ---
 
-## Built by
-
-**Sowaiba Arshad** — AI/ML Engineer
-
-Full-stack implementation: LangGraph multi-agent topology, ReAct tool-calling loops, E2B sandbox integration, live web search from within agents, async FastAPI backend, WebSocket real-time streaming, neon Next.js dashboard, Docker deployment.
-
-📧 sowaibaworkspace@gmail.com
-🐙 [github.com/Sowaiba-01](https://github.com/Sowaiba-01)
-
----
-
-*Demonstrates: multi-agent orchestration · LLM tool-use with web access · cloud sandbox code execution · async Python · real-time WebSocket streaming · GitHub App webhook integration · full-stack Docker deployment*

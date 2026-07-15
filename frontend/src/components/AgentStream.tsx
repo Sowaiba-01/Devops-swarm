@@ -11,7 +11,6 @@ const AGENT_COLOR: Record<string, string> = {
   system:    "text-white/15",
   pr:        "text-emerald-400",
 };
-
 const TYPE_PREFIX: Record<string, string> = {
   thought:     "THINK  ",
   tool_call:   "TOOL ▸ ",

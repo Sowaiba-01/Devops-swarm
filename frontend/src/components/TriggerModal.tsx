@@ -7,7 +7,6 @@ interface Props {
   onClose: () => void;
   onTriggered: (runId: string) => void;
 }
-
 export function TriggerModal({ onClose, onTriggered }: Props) {
   const [form, setForm] = useState({
     repo: "",

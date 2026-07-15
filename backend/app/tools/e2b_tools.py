@@ -1,15 +1,3 @@
-"""
-E2B Sandbox tools.
-
-Each run gets its own long-lived E2B sandbox (created lazily on first coder
-invocation).  Sandbox instances are stored in the module-level `_sandboxes`
-dict, keyed by run_id, so they survive across agent node calls within the
-same run.
-
-`make_e2b_tools(run_id, token, owner, repo)` returns LangChain tools that
-are pre-bound to the sandbox for that run.
-"""
-
 import asyncio
 import logging
 from typing import Dict

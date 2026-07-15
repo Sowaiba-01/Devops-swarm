@@ -14,6 +14,7 @@ const config: Record<string, { border: string; text: string; bg: string; label: 
     text:   "text-emerald-400",
     label:  "Done",
   },
+  
   failed: {
     border: "border-red-500/30",
     bg:     "bg-red-500/10",

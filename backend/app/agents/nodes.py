@@ -193,12 +193,12 @@ async def _react_loop(
 
             await _emit(
                 run_id, agent_name, "tool_result",
-                result_str[:700],
+                result_str[:400],
                 extra={"tool": tool_name},
             )
 
             messages.append(
-                ToolMessage(content=result_str[:800], tool_call_id=call_id)
+                ToolMessage(content=result_str[:450], tool_call_id=call_id)
             )
 
     return final_response
@@ -378,20 +378,20 @@ async def coder_node(state: SwarmState) -> dict:
     # Keep context small — Groq free tier limit is 12k tokens per request
     repo_ctx_snippet = ""
     if state.get("repo_context"):
-        repo_ctx_snippet = (
-            f"\nKNOWN FILES: {state['repo_context'][:500]}\n"
-        )
+        repo_ctx_snippet = f"\nFILES: {state['repo_context'][:200]}\n"
+
+    prior_failure_short = ""
+    if prior_failure:
+        prior_failure_short = f"\nPREV FAIL: {prior_failure[-600:]}\n"
 
     user_msg = (
         f"Repo: {owner}/{repo} | Branch: {branch_name}\n"
         f"Issue #{state['issue_number']}: {state['issue_title']}\n"
         f"{repo_ctx_snippet}"
-        f"\nPLAN:\n{state['plan'][:1200]}\n"
-        f"{prior_failure}\n"
-        "Steps: 1)setup_workspace() 2)write/edit files per plan "
-        "3)run_linter() 4)git_commit_all() 5)run_tests() "
-        "6)End with TESTS_PASSED or TESTS_FAILED:<reason>. "
-        "Use write_file() to CREATE new files — do not try to read files that don't exist yet."
+        f"PLAN: {state['plan'][:600]}\n"
+        f"{prior_failure_short}"
+        "Do: 1)setup_workspace() 2)write/edit files 3)run_linter() "
+        "4)git_commit_all() 5)run_tests() 6)TESTS_PASSED or TESTS_FAILED:<reason>"
     )
 
     result = await _react_loop(
@@ -479,17 +479,12 @@ async def reviewer_node(state: SwarmState) -> dict:
     )
 
     user_msg = (
-        f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
-        f"Issue #{state['issue_number']}: {state['issue_title']}\n\n"
-        f"Implementation Plan:\n{state.get('plan', 'N/A')[:800]}\n\n"
-        f"Test Result: {tests_status}\n"
-        f"Iterations used: {state.get('iteration', 0)} / {state.get('max_iterations', 3)}\n\n"
-        "Review the changes:\n"
-        "1. get_git_diff() — see every line changed.\n"
-        "2. run_security_scan() — automated checks.\n"
-        "3. read_file() any modified files for full context.\n"
-        "4. find_in_files() if you need to check patterns.\n"
-        "5. Produce your full structured review."
+        f"Repo: {state['repo_owner']}/{state['repo_name']}\n"
+        f"Issue #{state['issue_number']}: {state['issue_title']}\n"
+        f"Plan: {state.get('plan', 'N/A')[:400]}\n"
+        f"Tests: {tests_status[:300]}\n"
+        "Do: 1)get_git_diff() 2)run_security_scan() 3)read_file() if needed. "
+        "End with APPROVED or NEEDS_REVISION:<reason>"
     )
 
     review_notes = await _react_loop(

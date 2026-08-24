@@ -23,9 +23,9 @@ os.environ.update(
     DATABASE_URL=f"sqlite+aiosqlite:///{_DB_PATH.as_posix()}",
     LOG_LEVEL="WARNING",
     LOG_FORMAT="console",
-    GITHUB_PAT="ghp_testtokentesttokentesttoken1234",
-    GROQ_API_KEY="gsk_testtesttesttesttesttesttest",
-    E2B_API_KEY="e2b_testtesttesttesttesttest",
+    GITHUB_PAT="ghp_testtokentesttokentesttoken1234",  # gitleaks:allow
+    GROQ_API_KEY="gsk_testtesttesttesttesttesttest",  # gitleaks:allow
+    E2B_API_KEY="e2b_testtesttesttesttesttest",  # gitleaks:allow
     GITHUB_WEBHOOK_SECRET="test-webhook-secret",
     API_KEYS="",
     REPO_ALLOWLIST="*",

@@ -122,7 +122,9 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
       - name: Filesystem vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Tags are `v`-prefixed since the 2025 supply-chain incident; the bare
+        # `0.x` tags were withdrawn and no longer resolve.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

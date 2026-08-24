@@ -47,6 +47,9 @@ exclude = ["alembic/", "tests/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The application is run from this directory rather than installed as a
+# package, so `app` is only importable when the rootdir is on sys.path.
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-q --strict-markers"

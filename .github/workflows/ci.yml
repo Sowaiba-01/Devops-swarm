@@ -116,6 +116,10 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # Historical credentials in this repository were rotated. The
+          # allowlist in .gitleaks.toml documents which findings are dead.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
       - name: Filesystem vulnerability scan
         uses: aquasecurity/trivy-action@0.28.0

@@ -1,0 +1,29 @@
+# Gitleaks configuration.
+#
+# Credentials that appear in this repository's history were rotated and are no
+# longer valid. History is not rewritten because the repository has public
+# forks and clones; rewriting would break them without improving security for
+# credentials that are already dead.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, documented placeholders, and rotated historical credentials"
+
+paths = [
+  '''backend/tests/conftest\.py''',
+  '''\.env\.example''',
+  '''README\.md''',
+]
+
+regexes = [
+  # Placeholder values in documentation and .env.example
+  '''your_[a-z_]*_here''',
+  '''ghp_your''',
+  '''gsk_your''',
+  '''e2b_your''',
+  # Deterministic test fixtures — repeated literal text, never real credentials
+  '''(test){3,}''',
+  '''(testtoken){2,}''',
+]

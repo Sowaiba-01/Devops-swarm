@@ -2,95 +2,171 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --indigo-primary: #6366f1;
-  --indigo-light:   #818cf8;
-  --indigo-glow:    rgba(99,102,241,0.35);
-  --glass-bg:       rgba(255,255,255,0.06);
-  --glass-border:   rgba(255,255,255,0.10);
-  --glass-hover:    rgba(255,255,255,0.09);
-  --text-primary:   #e0e7ff;
-  --text-muted:     rgba(199,210,254,0.45);
-  --success:        #4ade80;
-  --error:          #f87171;
-  --live:           #818cf8;
+/*
+ * Design tokens.
+ *
+ * Light is the base declaration; `.dark` overrides only what changes. Both
+ * themes are defined at the same specificity so the toggle wins in either
+ * direction, and no colour is defined solely inside a media query.
+ */
+@layer base {
+  :root {
+    --canvas: 250 250 250;
+    --surface: 255 255 255;
+    --raised: 244 244 245;
+    --line: 228 228 231;
+    --line-strong: 212 212 216;
+
+    --ink: 24 24 27;
+    --ink-muted: 82 82 91;
+    --ink-faint: 139 139 148;
+
+    --accent: 5 150 105;
+    --accent-ink: 255 255 255;
+
+    --live: 37 99 235;
+    --pass: 5 150 105;
+    --warn: 202 138 4;
+    --fail: 220 38 38;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
+      Menlo, Consolas, monospace;
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --canvas: 9 9 11;
+    --surface: 17 17 19;
+    --raised: 24 24 27;
+    --line: 39 39 42;
+    --line-strong: 63 63 70;
+
+    --ink: 237 237 240;
+    --ink-muted: 161 161 170;
+    --ink-faint: 113 113 122;
+
+    --accent: 52 211 153;
+    --accent-ink: 6 20 15;
+
+    --live: 96 165 250;
+    --pass: 52 211 153;
+    --warn: 251 191 36;
+    --fail: 248 113 113;
+
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: rgb(var(--line));
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: rgb(var(--canvas));
+    color: rgb(var(--ink));
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One consistent, visible focus ring — keyboard navigation must never be
+     invisible, and the browser default disappears against a dark canvas. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.25);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--line-strong));
+    border: 3px solid rgb(var(--canvas));
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--ink-faint));
+  }
 }
 
-html { color-scheme: dark; }
+@layer components {
+  .panel {
+    @apply rounded-md border border-line bg-surface;
+  }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
-  background: #0f0b2a;
-  color: var(--text-primary);
-  min-height: 100vh;
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded border px-3 py-1.5
+           text-[13px] font-medium transition-colors
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn border-transparent bg-accent text-accent-ink hover:opacity-90;
+  }
+
+  .btn-ghost {
+    @apply btn border-line bg-transparent text-ink-muted
+           hover:border-line-strong hover:bg-raised hover:text-ink;
+  }
+
+  .field {
+    @apply w-full rounded border border-line bg-canvas px-3 py-2 text-[13px] text-ink
+           placeholder:text-ink-faint focus:border-accent focus:outline-none
+           focus:ring-1 focus:ring-accent;
+  }
+
+  .label {
+    @apply mb-1.5 block text-2xs font-medium uppercase tracking-wide text-ink-faint;
+  }
+
+  /* Header cell for data tables. */
+  .th {
+    @apply px-3 py-2 text-left text-2xs font-medium uppercase tracking-wide text-ink-faint;
+  }
+
+  .td {
+    @apply px-3 py-2.5 align-middle;
+  }
+
+  /* Neutral loading placeholder with a light sweep. */
+  .skeleton {
+    @apply relative overflow-hidden rounded bg-raised;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-y-0 w-1/3 animate-sweep;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--ink) / 0.06),
+      transparent
+    );
+  }
 }
 
-/* Radial background blobs */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(ellipse 80% 60% at 10% 0%,   rgba(99,102,241,0.18) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 90% 100%,  rgba(129,140,248,0.12) 0%, transparent 60%),
-    radial-gradient(ellipse 100% 80% at 50% 50%,  rgba(15,11,42,1) 0%, transparent 100%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* Glass base */
-.glass {
-  background: var(--glass-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--glass-border);
-}
-.glass-hover:hover {
-  background: var(--glass-hover);
-  border-color: rgba(255,255,255,0.15);
-}
-
-/* Input focus */
-.glass-input:focus {
-  outline: none;
-  border-color: var(--indigo-primary) !important;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.2);
-}
-
-/* Pulse animation */
-@keyframes soft-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.35; }
-}
-.pulse { animation: soft-pulse 2s ease-in-out infinite; }
-
-/* Scrollbars */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(99,102,241,0.3) transparent;
-}
-::-webkit-scrollbar       { width: 4px; height: 4px; }
-::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: rgba(99,102,241,0.35); border-radius: 999px; }
-
-/* Selection */
-::selection { background: rgba(99,102,241,0.25); color: inherit; }
-
-/* Timeline */
-.timeline-line::before {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 20px;
-  bottom: -4px;
-  width: 1px;
-  background: linear-gradient(to bottom, rgba(99,102,241,0.3), transparent);
-}
-
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #c7d2fe 0%, #818cf8 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

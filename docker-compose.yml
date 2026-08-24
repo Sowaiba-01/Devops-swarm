@@ -1,26 +1,59 @@
-version: "3.8"
+# Local development stack.
+#
+# `version:` is intentionally absent — Compose v2 ignores it and warns.
+#
+# Secrets come from .env (never committed). The Postgres password is read from
+# the environment rather than hardcoded here, so the file itself is safe to
+# publish and the local password can differ from anyone else's.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
-  # ── PostgreSQL ──────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: swarm
-      POSTGRES_PASSWORD: swarmpass
-      POSTGRES_DB: devops_swarm
+      POSTGRES_USER: ${POSTGRES_USER:-swarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-swarmpass}
+      POSTGRES_DB: ${POSTGRES_DB:-devops_swarm}
+      # Fail loudly rather than silently accepting any password.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U swarm -d devops_swarm"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-swarm} -d ${POSTGRES_DB:-devops_swarm}"]
       interval: 5s
       timeout: 5s
-      retries: 10
-    networks:
-      - swarm_net
+      retries: 12
+      start_period: 10s
+    # Not published to the host: only the backend needs to reach it.
+    expose:
+      - "5432"
+    networks: [swarm_net]
+    logging: *default-logging
 
-  # ── FastAPI Backend ─────────────────────────────────────────────────────
+  # Runs migrations to completion, then exits. The API waits on it, so the
+  # schema is always current before the first request is served.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-swarm}:${POSTGRES_PASSWORD:-swarmpass}@postgres:5432/${POSTGRES_DB:-devops_swarm}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [swarm_net]
+    logging: *default-logging
+
   backend:
     build:
       context: ./backend
@@ -28,30 +61,47 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://swarm:swarmpass@postgres:5432/devops_swarm
-      CORS_ORIGINS: http://localhost:3000
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-swarm}:${POSTGRES_PASSWORD:-swarmpass}@postgres:5432/${POSTGRES_DB:-devops_swarm}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_FORMAT: ${LOG_FORMAT:-console}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - swarm_net
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks: [swarm_net]
+    logging: *default-logging
 
-  # ── Next.js Frontend ────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        # Next.js inlines NEXT_PUBLIC_* at build time. The Dockerfile must
+        # declare a matching ARG or this value is silently dropped and the
+        # bundle falls back to localhost — which breaks every non-local deploy.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
-      - backend
-    networks:
-      - swarm_net
+      backend:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    networks: [swarm_net]
+    logging: *default-logging
 
 volumes:
   postgres_data:

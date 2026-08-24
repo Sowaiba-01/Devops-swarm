@@ -1,0 +1,66 @@
+[project]
+name = "devops-swarm-backend"
+version = "2.0.0"
+description = "Multi-agent system that resolves GitHub issues end to end"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["alembic/versions", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "S",    # bandit-style security checks
+    "ASYNC",# async correctness
+    "C4",   # comprehensions
+    "SIM",  # simplification
+    "RUF",
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends() in defaults is the documented pattern
+    "S101",    # assert is fine in tests
+    "SIM105",  # contextlib.suppress is not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311", "S603", "S607"]
+# The sandbox tools build shell commands by design; every interpolation there
+# goes through shlex.quote and is reviewed as such.
+"app/tools/e2b_tools.py" = ["S604", "S607"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = ["alembic/", "tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "error::DeprecationWarning:app.*",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["alembic/*", "tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

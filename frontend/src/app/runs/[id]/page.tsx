@@ -1,154 +1,183 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { fetchRun, Run } from "@/lib/api";
-import { StatusBadge } from "@/components/StatusBadge";
-import { AgentStream } from "@/components/AgentStream";
+import { useParams } from "next/navigation";
+import { useState } from "react";
 
-function MetaField({ label, value, mono = false, link = false }: {
-  label: string; value: string | null | undefined; mono?: boolean; link?: boolean;
+import { LogConsole } from "@/components/LogConsole";
+import { PipelineTrack } from "@/components/Pipeline";
+import { ErrorNotice, StatusPill, TestBadge, VerdictBadge } from "@/components/primitives";
+import { ApiError, api, isTerminal } from "@/lib/api";
+import { useRun } from "@/lib/hooks";
+import { formatAbsolute, formatDuration } from "@/lib/format";
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
 }) {
   return (
     <div>
-      <p className="text-[9px] text-white/25 tracking-widest uppercase mb-1.5">{label}</p>
-      {link && value ? (
-        <a href={value} target="_blank" rel="noopener noreferrer"
-           className="text-indigo-300 hover:text-indigo-200 text-[11px] underline underline-offset-2">
-          View PR ↗
-        </a>
-      ) : (
-        <p className={`text-[11px] ${mono ? "font-mono text-indigo-300" : "text-white/60"} truncate`}>
-          {value ?? "—"}
-        </p>
-      )}
+      <dt className="text-2xs font-medium uppercase tracking-wide text-ink-faint">{label}</dt>
+      <dd className="mt-1 truncate text-[13px] text-ink">{children}</dd>
     </div>
   );
 }
 
 export default function RunDetailPage() {
-  const { id }  = useParams<{ id: string }>();
-  const router  = useRouter();
-  const [run, setRun]     = useState<Run | null>(null);
-  const [error, setError] = useState(false);
+  const { id } = useParams<{ id: string }>();
+  const { data: run, error, loading, refresh } = useRun(id);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    async function refresh() {
-      try {
-        const data = await fetchRun(id);
-        setRun(data);
-        if (data.status === "running") {
-          timer = setTimeout(refresh, 5000);
+  if (error && !run) {
+    return (
+      <ErrorNotice
+        title={error.status === 404 ? "Run not found" : "Could not load this run"}
+        detail={
+          error.status === 404
+            ? "This run does not exist. It may have been removed, or the link may be wrong."
+            : error.message
         }
-      } catch {
-        setError(true);
-      }
+        requestId={error.requestId}
+        onRetry={refresh}
+      />
+    );
+  }
+
+  if (loading && !run) {
+    return (
+      <div className="space-y-4">
+        <div className="skeleton h-28" />
+        <div className="skeleton h-[520px]" />
+      </div>
+    );
+  }
+
+  if (!run) return null;
+
+  const live = !isTerminal(run.status);
+
+  async function cancel() {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await api.cancel(id);
+      await refresh();
+    } catch (caught) {
+      setCancelError(caught instanceof ApiError ? caught.message : "Could not cancel the run");
+    } finally {
+      setCancelling(false);
     }
-    refresh();
-    return () => clearTimeout(timer);
-  }, [id]);
-
-  if (error) {
-    return (
-      <div className="glass rounded-2xl p-6 border-red-500/20">
-        <p className="text-red-400 text-sm font-medium mb-1">Run not found</p>
-        <p className="text-white/30 text-xs mb-3">Backend may be unreachable.</p>
-        <button onClick={() => router.push("/")} className="text-xs text-indigo-300 hover:text-indigo-200 underline underline-offset-2">
-          ← Dashboard
-        </button>
-      </div>
-    );
   }
-
-  if (!run) {
-    return (
-      <div className="flex items-center justify-center h-64 text-white/20 text-sm">
-        Loading run…
-      </div>
-    );
-  }
-
-  const duration = (() => {
-    if (!run.created_at) return "—";
-    const ms = (run.completed_at ? new Date(run.completed_at) : new Date()).getTime()
-             - new Date(run.created_at).getTime();
-    const s = Math.floor(ms / 1000);
-    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-  })();
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-[calc(100vh-9rem)] flex-col gap-4">
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-2xs text-ink-faint">
+        <Link href="/runs" className="hover:text-ink">
+          Runs
+        </Link>
+        <span aria-hidden>/</span>
+        <span className="font-mono text-ink-muted">{id.slice(0, 8)}</span>
+      </nav>
 
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-[10px] text-white/25">
-        <Link href="/" className="hover:text-indigo-300 transition-colors">Dashboard</Link>
-        <span className="text-white/15">/</span>
-        <span className="text-indigo-300/60 font-mono">{id.slice(0, 8)}…</span>
-      </div>
-
-      {/* Run header */}
-      <div className="glass rounded-2xl p-5">
-        <div className="flex items-start justify-between gap-4 mb-5">
-          <div className="flex-1 min-w-0">
-            <p className="text-[9px] text-white/25 tracking-widest uppercase mb-1.5">Run Detail</p>
-            <h1 className="text-sm font-bold text-white leading-tight">
-              <span className="text-white/30 font-mono mr-2">#{run.issue_number}</span>
-              {run.issue_title}
+      <header className="panel p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="flex flex-wrap items-baseline gap-2 text-base font-semibold text-ink">
+              <span className="font-mono text-2xs text-ink-faint">#{run.issue_number}</span>
+              {run.issue_title ?? "(untitled issue)"}
             </h1>
-            <p className="text-indigo-300/50 font-mono text-[11px] mt-1">{run.repo}</p>
+            <p className="mt-1 font-mono text-2xs text-ink-muted">{run.repo}</p>
           </div>
-          <StatusBadge status={run.status} />
+
+          <div className="flex flex-wrap items-center gap-2">
+            <TestBadge passed={run.tests_passed} />
+            <VerdictBadge verdict={run.review_verdict} />
+            <StatusPill status={run.status} />
+            {live && (
+              <button
+                type="button"
+                onClick={cancel}
+                disabled={cancelling}
+                className="btn-ghost text-fail hover:border-fail/40 hover:text-fail"
+              >
+                {cancelling ? "Cancelling…" : "Cancel"}
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-4 pt-4 border-t border-white/[0.07]">
-          <MetaField label="Branch"     value={run.branch_name}               mono />
-          <MetaField label="Iterations" value={`${run.iteration_count ?? 0} / 3`} />
-          <MetaField label="Duration"   value={duration} />
-          <MetaField label="Pull Request" value={run.pr_url} link />
-        </div>
+        <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-line pt-4 lg:grid-cols-5">
+          <Field label="Branch">
+            {run.branch_name ? (
+              <span className="font-mono text-2xs text-accent">{run.branch_name}</span>
+            ) : (
+              <span className="text-ink-faint">—</span>
+            )}
+          </Field>
+          <Field label="Correction rounds">
+            <span className="tabular-nums">{run.iteration_count}</span>
+          </Field>
+          <Field label="Duration">
+            <span className="tabular-nums">{formatDuration(run.duration_seconds)}</span>
+          </Field>
+          <Field label="Started">
+            <span className="text-2xs">{formatAbsolute(run.created_at)}</span>
+          </Field>
+          <Field label="Pull request">
+            {run.pr_url ? (
+              <a
+                href={run.pr_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                Open on GitHub ↗
+              </a>
+            ) : (
+              <span className="text-ink-faint">not opened yet</span>
+            )}
+          </Field>
+        </dl>
+
+        {cancelError && (
+          <p role="alert" className="mt-3 text-2xs text-fail">
+            {cancelError}
+          </p>
+        )}
 
         {run.error_message && (
-          <div className="mt-4 glass rounded-xl p-3 border-red-500/20 bg-red-500/5">
-            <p className="text-[11px] text-red-400">{run.error_message}</p>
+          <div
+            role="alert"
+            className="mt-4 rounded border border-fail/30 bg-fail/[0.06] p-3 text-2xs text-ink"
+          >
+            <span className="font-medium text-fail">Run failed. </span>
+            {run.error_message}
           </div>
         )}
 
-        {run.status === "success" && run.pr_url && (
-          <div className="mt-4 glass rounded-xl p-4 border-emerald-500/25 flex items-center justify-between">
-            <div>
-              <p className="text-emerald-300 font-semibold text-sm">Swarm completed</p>
-              <p className="text-white/30 text-[11px] mt-0.5">Draft PR is waiting for your review on GitHub.</p>
-            </div>
-            <a
-              href={run.pr_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="glass rounded-xl px-4 py-2 border-emerald-500/30 hover:border-emerald-400/50 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-300 text-xs font-semibold transition-all whitespace-nowrap"
-            >
-              Review PR ↗
-            </a>
+        {run.status === "success" && run.tests_passed === false && (
+          // The pipeline finishing and the change being correct are different
+          // facts, and conflating them was how a broken PR looked like a win.
+          <div className="mt-4 rounded border border-warn/30 bg-warn/[0.06] p-3 text-2xs text-ink">
+            <span className="font-medium text-warn">Tests did not pass. </span>
+            A pull request was opened so a human can inspect the attempt. Do not merge it as-is.
           </div>
         )}
-      </div>
+      </header>
 
-      {/* Agent stream */}
-      <div className="glass rounded-2xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-white/[0.07] flex items-center justify-between">
-          <span className="text-xs font-medium text-white/50">Agent Stream</span>
-          <div className="flex items-center gap-3 text-[9px]">
-            <span className="text-violet-400">■ Architect</span>
-            <span className="text-indigo-300">■ Coder</span>
-            <span className="text-amber-400">■ Reviewer</span>
-            <span className="text-emerald-400">■ PR</span>
-          </div>
-        </div>
-        <div className="h-[560px]">
-          <AgentStream runId={id} isLive={run.status === "running"} />
-        </div>
-      </div>
+      <section aria-label="Pipeline">
+        <PipelineTrack run={run} />
+      </section>
 
+      <div className="min-h-[440px] flex-1">
+        {/* Keyed on the run so navigating between runs remounts the console
+            rather than leaving the previous run's events on screen. */}
+        <LogConsole key={id} runId={id} live={live} />
+      </div>
     </div>
   );
 }

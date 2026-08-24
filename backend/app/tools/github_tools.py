@@ -1,15 +1,22 @@
 """
-GitHub App tools.
+GitHub REST tools and App authentication.
 
-Provides a factory `make_github_tools(token, owner, repo)` that returns
-a list of LangChain @tool functions pre-bound to a specific installation
-token + repository.  Call `get_installation_token(installation_id)` once
-per run to obtain the token.
+Behaviour changes worth calling out:
+
+* `create_or_update_file` previously sent the target branch as an HTTP *header*
+  (`headers={..., "ref": branch}`). GitHub ignores unknown headers, so the call
+  fetched the default branch's blob SHA and every update to a non-default branch
+  failed with a 409 conflict. It is a query parameter.
+* Every request now retries idempotent failures with backoff and honours
+  `Retry-After` / `X-RateLimit-Reset`, instead of surfacing a raw
+  `HTTPStatusError` traceback into the agent's context window.
+* Connections are pooled rather than opening a fresh TLS session per call.
 """
+
+from __future__ import annotations
 
 import base64
 import time
-import logging
 from typing import Any
 
 import httpx
@@ -18,213 +25,351 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from langchain_core.tools import tool
 
 from app.config import settings
+from app.core.logging import get_logger
+from app.core.redaction import redact, register_secret
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 GITHUB_API = "https://api.github.com"
-HEADERS_BASE = {"Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}
+BASE_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": f"devops-swarm/{settings.VERSION}",
+}
+
+MAX_ATTEMPTS = 3
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
 
 
-# ---------------------------------------------------------------------------
-# GitHub App JWT + installation token helpers
-# ---------------------------------------------------------------------------
+class GitHubError(RuntimeError):
+    """A GitHub call failed in a way the agent should be told about."""
 
-def _create_app_jwt() -> str:
-    """Create a short-lived JWT signed with the GitHub App private key."""
-    private_key = load_pem_private_key(
-        settings.github_private_key_pem.encode(),
-        password=None,
-    )
+
+# ── App authentication ─────────────────────────────────────────────────
+
+
+def create_app_jwt() -> str:
+    """Short-lived JWT signed with the GitHub App private key."""
+    if not settings.GITHUB_APP_ID or not settings.GITHUB_PRIVATE_KEY:
+        raise GitHubError("GITHUB_APP_ID and GITHUB_PRIVATE_KEY must be configured")
+    private_key = load_pem_private_key(settings.github_private_key_pem.encode(), password=None)
     now = int(time.time())
-    payload = {
-        "iat": now - 60,   # issued slightly in the past to handle clock drift
-        "exp": now + 540,  # valid for 9 minutes
-        "iss": settings.GITHUB_APP_ID,
-    }
+    payload = {"iat": now - 60, "exp": now + 540, "iss": settings.GITHUB_APP_ID}
     return pyjwt.encode(payload, private_key, algorithm="RS256")  # type: ignore[arg-type]
 
 
 async def get_installation_token(installation_id: int) -> str:
-    """Exchange the App JWT for a short-lived installation access token."""
-    app_jwt = _create_app_jwt()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
+    """Exchange the App JWT for an installation access token."""
+    app_jwt = create_app_jwt()
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        response = await client.post(
             f"{GITHUB_API}/app/installations/{installation_id}/access_tokens",
-            headers={**HEADERS_BASE, "Authorization": f"Bearer {app_jwt}"},
+            headers={**BASE_HEADERS, "Authorization": f"Bearer {app_jwt}"},
         )
-        resp.raise_for_status()
-        return resp.json()["token"]
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Installation token request failed ({response.status_code}): "
+                f"{redact(response.text)[:300]}"
+            )
+        token = response.json()["token"]
+    # Register before the token is used anywhere it might be echoed back.
+    register_secret(token)
+    return token
 
 
-# ---------------------------------------------------------------------------
-# Tool factory
-# ---------------------------------------------------------------------------
+# ── Transport ──────────────────────────────────────────────────────────
 
-def make_github_tools(token: str, owner: str, repo: str):
-    """
-    Return a list of LangChain tools pre-bound to the given GitHub
-    installation token and repository.
-    """
-    auth_headers = {**HEADERS_BASE, "Authorization": f"Bearer {token}"}
+
+def _request(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Issue a request, retrying transient failures with backoff."""
+    last: httpx.Response | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = client.request(method, url, **kwargs)
+        except httpx.RequestError as exc:
+            if attempt == MAX_ATTEMPTS:
+                raise GitHubError(f"Network error calling GitHub: {exc}") from exc
+            time.sleep(min(2**attempt, 8))
+            continue
+
+        if response.status_code not in RETRY_STATUSES:
+            return response
+
+        last = response
+        if attempt == MAX_ATTEMPTS:
+            break
+
+        # Prefer the server's own guidance over a fixed backoff.
+        delay = float(response.headers.get("Retry-After", 0) or 0)
+        if not delay and response.headers.get("X-RateLimit-Remaining") == "0":
+            reset = int(response.headers.get("X-RateLimit-Reset", 0) or 0)
+            delay = max(0.0, reset - time.time())
+        time.sleep(min(delay or 2**attempt, 30))
+
+    assert last is not None
+    return last
+
+
+def _client(token: str) -> httpx.Client:
+    return httpx.Client(
+        headers={**BASE_HEADERS, "Authorization": f"Bearer {token}"},
+        timeout=REQUEST_TIMEOUT,
+        limits=_LIMITS,
+        follow_redirects=True,
+    )
+
+
+def _fail(action: str, response: httpx.Response) -> str:
+    detail = redact(response.text)[:300]
+    logger.warning("GitHub %s failed with %d", action, response.status_code)
+    return f"ERROR: {action} failed ({response.status_code}): {detail}"
+
+
+# ── Tool factory ───────────────────────────────────────────────────────
+
+
+def make_github_tools(*, token: str, owner: str, repo: str) -> list:
+    """Build the GitHub toolset bound to one token and repository."""
+
+    register_secret(token)
+    repo_root = f"{GITHUB_API}/repos/{owner}/{repo}"
+
+    def _default_branch(client: httpx.Client) -> str:
+        response = _request(client, "GET", repo_root)
+        if response.status_code == 200:
+            return str(response.json().get("default_branch") or "main")
+        return "main"
 
     # ------------------------------------------------------------------ #
     @tool
-    def get_file_contents(path: str) -> str:
+    def get_file_contents(path: str, ref: str = "") -> str:
         """
-        Fetch the raw content of a file from the repository.
+        Read a file from the repository.
         Args:
-            path: File path relative to repo root, e.g. 'src/main.py'
+            path: Path relative to the repository root, e.g. 'src/main.py'
+            ref: Optional branch, tag, or commit SHA
         """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers)
-        if resp.status_code == 404:
-            return f"ERROR: File not found: {path}"
-        resp.raise_for_status()
-        data = resp.json()
+        with _client(token) as client:
+            response = _request(
+                client,
+                "GET",
+                f"{repo_root}/contents/{path.lstrip('/')}",
+                params={"ref": ref} if ref else None,
+            )
+            if response.status_code == 404:
+                return f"ERROR: file not found: {path}"
+            if response.status_code >= 400:
+                return _fail(f"read {path}", response)
+            data = response.json()
         if isinstance(data, list):
-            return f"ERROR: {path} is a directory. Use list_directory instead."
+            return f"ERROR: {path} is a directory — use list_directory instead."
+        if data.get("encoding") != "base64":
+            return f"ERROR: {path} is not a text file GitHub will decode."
         raw = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-        return raw
+        return raw[:20_000]
 
     # ------------------------------------------------------------------ #
     @tool
     def list_directory(path: str = "") -> str:
         """
-        List files and directories at the given path in the repository.
+        List a directory in the repository.
         Args:
-            path: Directory path relative to repo root. Empty string = root.
+            path: Directory relative to the repository root; empty for the root.
         """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers)
-        if resp.status_code == 404:
-            return f"ERROR: Path not found: {path}"
-        resp.raise_for_status()
-        items = resp.json()
+        with _client(token) as client:
+            response = _request(client, "GET", f"{repo_root}/contents/{path.lstrip('/')}")
+            if response.status_code == 404:
+                return f"ERROR: path not found: {path}"
+            if response.status_code >= 400:
+                return _fail(f"list {path}", response)
+            items = response.json()
         if not isinstance(items, list):
-            return f"ERROR: {path} is a file. Use get_file_contents instead."
-        lines = []
-        for item in items:
-            icon = "📁" if item["type"] == "dir" else "📄"
-            lines.append(f"{icon} {item['path']} ({item['type']})")
-        return "\n".join(lines) if lines else "(empty directory)"
+            return f"ERROR: {path} is a file — use get_file_contents instead."
+        return "\n".join(f"{i['type']:<4} {i['path']}" for i in items) or "(empty directory)"
 
     # ------------------------------------------------------------------ #
     @tool
     def search_code(query: str) -> str:
         """
-        Search for code in the repository using GitHub code search.
+        Search the repository's code.
         Args:
-            query: Search query, e.g. 'def authenticate' or 'class UserModel'
+            query: Search terms, e.g. 'def authenticate'
         """
-        url = f"{GITHUB_API}/search/code"
-        params = {"q": f"{query} repo:{owner}/{repo}", "per_page": 10}
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers, params=params)
-        resp.raise_for_status()
-        items = resp.json().get("items", [])
-        if not items:
-            return "No results found."
-        lines = [f"- {item['path']}" for item in items]
-        return "\n".join(lines)
+        with _client(token) as client:
+            response = _request(
+                client,
+                "GET",
+                f"{GITHUB_API}/search/code",
+                params={"q": f"{query} repo:{owner}/{repo}", "per_page": 15},
+            )
+            if response.status_code >= 400:
+                return _fail("code search", response)
+            items = response.json().get("items", [])
+        return "\n".join(f"- {i['path']}" for i in items) or "No results."
 
     # ------------------------------------------------------------------ #
     @tool
     def get_repo_structure(depth: int = 2) -> str:
         """
-        Get a tree view of the repository structure.
+        Show the repository tree.
         Args:
-            depth: How many directory levels to show (1–3 recommended).
+            depth: Directory levels to include (1-4).
         """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/git/trees/HEAD"
-        params = {"recursive": "1"}
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers, params=params)
-        resp.raise_for_status()
-        tree = resp.json().get("tree", [])
-        lines = []
-        for node in tree:
-            parts = node["path"].split("/")
-            if len(parts) <= depth:
-                indent = "  " * (len(parts) - 1)
-                icon = "📁" if node["type"] == "tree" else "📄"
-                lines.append(f"{indent}{icon} {parts[-1]}")
-        return "\n".join(lines[:200])  # cap at 200 lines
+        depth = max(1, min(depth, 4))
+        with _client(token) as client:
+            response = _request(
+                client, "GET", f"{repo_root}/git/trees/HEAD", params={"recursive": "1"}
+            )
+            if response.status_code >= 400:
+                return _fail("read tree", response)
+            tree = response.json().get("tree", [])
+        lines = [n["path"] for n in tree if len(n["path"].split("/")) <= depth]
+        return "\n".join(lines[:300])
 
     # ------------------------------------------------------------------ #
     @tool
-    def create_branch(branch_name: str, base_branch: str = "main") -> str:
+    def get_full_repo_context() -> str:
         """
-        Create a new branch in the repository.
-        Args:
-            branch_name: Name of the new branch, e.g. 'fix/issue-42'
-            base_branch: Branch to branch off from (default: main)
+        One-shot repository snapshot: the file tree plus key manifests.
+        Call this before planning.
         """
-        # Get base branch SHA
-        with httpx.Client() as c:
-            ref_resp = c.get(
-                f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{base_branch}",
-                headers=auth_headers,
+        with _client(token) as client:
+            response = _request(
+                client, "GET", f"{repo_root}/git/trees/HEAD", params={"recursive": "1"}
             )
-            if ref_resp.status_code == 404:
-                # Try 'master' as fallback
-                ref_resp = c.get(
-                    f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/master",
-                    headers=auth_headers,
-                )
-            ref_resp.raise_for_status()
-            sha = ref_resp.json()["object"]["sha"]
+            if response.status_code >= 400:
+                return _fail("read repository tree", response)
+            payload = response.json()
+            paths = [n["path"] for n in payload.get("tree", []) if n["type"] == "blob"]
 
-            create_resp = c.post(
-                f"{GITHUB_API}/repos/{owner}/{repo}/git/refs",
-                headers=auth_headers,
+            interesting = {
+                "readme.md",
+                "readme.rst",
+                "requirements.txt",
+                "pyproject.toml",
+                "setup.py",
+                "package.json",
+                "go.mod",
+                "cargo.toml",
+                "pom.xml",
+                "build.gradle",
+                "makefile",
+                "docker-compose.yml",
+                ".env.example",
+            }
+            sections: list[str] = []
+            budget = settings.REPO_CONTEXT_CHAR_BUDGET
+            for path in paths:
+                if path.lower() not in interesting or budget <= 0:
+                    continue
+                file_response = _request(client, "GET", f"{repo_root}/contents/{path}")
+                if file_response.status_code != 200:
+                    continue
+                body = file_response.json()
+                if body.get("encoding") != "base64":
+                    continue
+                text = base64.b64decode(body["content"]).decode("utf-8", errors="replace")
+                slice_ = text[: min(2500, budget)]
+                budget -= len(slice_)
+                sections.append(f"=== {path} ===\n{slice_}")
+
+        truncated = " (truncated)" if payload.get("truncated") else ""
+        return (
+            f"REPOSITORY: {owner}/{repo}\n"
+            f"FILES: {len(paths)}{truncated}\n\n"
+            f"FILE TREE:\n"
+            + "\n".join(paths[:500])
+            + "\n\n"
+            + ("KEY FILES:\n" + "\n\n".join(sections) if sections else "")
+        )
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def get_issue_comments(issue_number: int) -> str:
+        """
+        Read the comments on an issue for requirements added after it was opened.
+        Args:
+            issue_number: Issue number
+        """
+        with _client(token) as client:
+            response = _request(
+                client,
+                "GET",
+                f"{repo_root}/issues/{issue_number}/comments",
+                params={"per_page": 20},
+            )
+            if response.status_code >= 400:
+                return _fail("read issue comments", response)
+            comments = response.json()
+        if not comments:
+            return "No comments on this issue."
+        return "\n\n---\n\n".join(f"@{c['user']['login']}:\n{c['body'][:800]}" for c in comments)
+
+    # ------------------------------------------------------------------ #
+    @tool
+    def create_branch(branch_name: str, base_branch: str = "") -> str:
+        """
+        Create a branch. Succeeds quietly if it already exists.
+        Args:
+            branch_name: New branch name
+            base_branch: Branch to fork from; defaults to the repository default.
+        """
+        with _client(token) as client:
+            base = base_branch or _default_branch(client)
+            ref_response = _request(client, "GET", f"{repo_root}/git/ref/heads/{base}")
+            if ref_response.status_code >= 400:
+                return _fail(f"resolve base branch '{base}'", ref_response)
+            sha = ref_response.json()["object"]["sha"]
+
+            create_response = _request(
+                client,
+                "POST",
+                f"{repo_root}/git/refs",
                 json={"ref": f"refs/heads/{branch_name}", "sha": sha},
             )
-            if create_resp.status_code == 422:
+            if create_response.status_code == 422:
                 return f"Branch '{branch_name}' already exists."
-            create_resp.raise_for_status()
-        return f"Branch '{branch_name}' created from '{base_branch}' (SHA: {sha[:7]})."
+            if create_response.status_code >= 400:
+                return _fail(f"create branch '{branch_name}'", create_response)
+        return f"Branch '{branch_name}' created from '{base}' at {sha[:7]}."
 
     # ------------------------------------------------------------------ #
     @tool
-    def create_or_update_file(
-        path: str,
-        content: str,
-        commit_message: str,
-        branch: str,
-    ) -> str:
+    def create_or_update_file(path: str, content: str, commit_message: str, branch: str) -> str:
         """
-        Create or update a file in the repository on the given branch.
+        Commit a file directly through the API.
         Args:
-            path: File path relative to repo root
-            content: Full file content (text)
-            commit_message: Git commit message
-            branch: Branch name to commit to
+            path: Path relative to the repository root
+            content: Complete file content
+            commit_message: Commit message
+            branch: Branch to commit to
         """
-        encoded = base64.b64encode(content.encode()).decode()
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-
-        # Try to get existing file SHA (needed for updates)
-        sha: str | None = None
-        with httpx.Client() as c:
-            get_resp = c.get(url, headers={**auth_headers, "ref": branch})
-            if get_resp.status_code == 200:
-                sha = get_resp.json().get("sha")
+        url = f"{repo_root}/contents/{path.lstrip('/')}"
+        with _client(token) as client:
+            # `ref` is a query parameter. Sending it as a header silently
+            # resolved the default branch and broke every non-default update.
+            existing = _request(client, "GET", url, params={"ref": branch})
+            sha = existing.json().get("sha") if existing.status_code == 200 else None
 
             payload: dict[str, Any] = {
                 "message": commit_message,
-                "content": encoded,
+                "content": base64.b64encode(content.encode()).decode(),
                 "branch": branch,
             }
             if sha:
                 payload["sha"] = sha
 
-            put_resp = c.put(url, headers=auth_headers, json=payload)
-            put_resp.raise_for_status()
-
-        action = "Updated" if sha else "Created"
-        return f"{action} file '{path}' on branch '{branch}'."
+            response = _request(client, "PUT", url, json=payload)
+            if response.status_code >= 400:
+                return _fail(f"write {path}", response)
+        return f"{'Updated' if sha else 'Created'} '{path}' on '{branch}'."
 
     # ------------------------------------------------------------------ #
     @tool
@@ -232,126 +377,69 @@ def make_github_tools(token: str, owner: str, repo: str):
         title: str,
         body: str,
         head_branch: str,
-        base_branch: str = "main",
+        base_branch: str = "",
         draft: bool = True,
     ) -> str:
         """
-        Open a pull request in the repository.
+        Open a pull request.
         Args:
             title: PR title
-            body: PR description (Markdown supported)
-            head_branch: The branch containing the changes
-            base_branch: Target branch (default: main)
-            draft: Whether to create as a draft PR (default: True)
+            body: PR description in Markdown
+            head_branch: Branch containing the changes
+            base_branch: Target branch; defaults to the repository default.
+            draft: Open as a draft
         """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls"
-
-        with httpx.Client() as c:
-            # Auto-detect actual default branch (handles main vs master)
-            repo_resp = c.get(f"{GITHUB_API}/repos/{owner}/{repo}", headers=auth_headers)
-            if repo_resp.status_code == 200:
-                base_branch = repo_resp.json().get("default_branch", base_branch)
-
-            payload = {
-                "title": title,
-                "body": body[:65000],   # GitHub caps PR body at 65536 chars
-                "head": head_branch,
-                "base": base_branch,
-                "draft": draft,
-            }
-            resp = c.post(url, headers=auth_headers, json=payload)
-            if not resp.is_success:
-                return f"PR creation failed ({resp.status_code}): {resp.text[:500]}"
-            pr = resp.json()
+        with _client(token) as client:
+            base = base_branch or _default_branch(client)
+            response = _request(
+                client,
+                "POST",
+                f"{repo_root}/pulls",
+                json={
+                    "title": title[:250],
+                    "body": body[:60_000],
+                    "head": head_branch,
+                    "base": base,
+                    "draft": draft,
+                },
+            )
+            if response.status_code == 422 and "draft" in response.text.lower():
+                # Private repos on the free plan reject draft PRs.
+                response = _request(
+                    client,
+                    "POST",
+                    f"{repo_root}/pulls",
+                    json={
+                        "title": title[:250],
+                        "body": body[:60_000],
+                        "head": head_branch,
+                        "base": base,
+                    },
+                )
+            if response.status_code >= 400:
+                return _fail("create pull request", response)
+            pr = response.json()
         return f"PR #{pr['number']} created: {pr['html_url']}"
 
     # ------------------------------------------------------------------ #
     @tool
     def add_issue_comment(issue_number: int, body: str) -> str:
         """
-        Post a comment on the GitHub issue.
+        Comment on an issue.
         Args:
-            issue_number: The issue number
-            body: Comment text (Markdown supported)
+            issue_number: Issue number
+            body: Comment text in Markdown
         """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        with httpx.Client() as c:
-            resp = c.post(url, headers=auth_headers, json={"body": body})
-            resp.raise_for_status()
+        with _client(token) as client:
+            response = _request(
+                client,
+                "POST",
+                f"{repo_root}/issues/{issue_number}/comments",
+                json={"body": body[:60_000]},
+            )
+            if response.status_code >= 400:
+                return _fail("post issue comment", response)
         return "Comment posted."
-
-    # ------------------------------------------------------------------ #
-    @tool
-    def get_full_repo_context() -> str:
-        """
-        Get a comprehensive snapshot of the repository in one call:
-        full recursive file tree + contents of key config/dependency files.
-        Call this at the very start of planning to understand the full codebase.
-        """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/git/trees/HEAD"
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers, params={"recursive": "1"})
-        resp.raise_for_status()
-        tree = resp.json().get("tree", [])
-        file_paths = [n["path"] for n in tree if n["type"] == "blob"]
-        tree_str = "\n".join(file_paths[:400])
-
-        key_files = [
-            "README.md", "readme.md", "README.rst",
-            "requirements.txt", "requirements-dev.txt",
-            "package.json", "go.mod", "Cargo.toml",
-            "pyproject.toml", "setup.py", "setup.cfg",
-            ".github/workflows/ci.yml", ".github/workflows/test.yml",
-            "Makefile", "docker-compose.yml", ".env.example",
-        ]
-        key_contents = []
-        with httpx.Client() as c:
-            for kf in key_files:
-                match = next(
-                    (p for p in file_paths if p.lower() == kf.lower()), None
-                )
-                if not match:
-                    continue
-                resp = c.get(
-                    f"{GITHUB_API}/repos/{owner}/{repo}/contents/{match}",
-                    headers=auth_headers,
-                )
-                if resp.status_code == 200:
-                    raw = base64.b64decode(resp.json()["content"]).decode(
-                        "utf-8", errors="replace"
-                    )
-                    key_contents.append(f"=== {match} ===\n{raw[:2500]}")
-
-        summary = (
-            f"REPOSITORY: {owner}/{repo}\n"
-            f"TOTAL FILES: {len(file_paths)}\n\n"
-            f"FILE TREE:\n{tree_str}\n\n"
-            + ("KEY FILES:\n" + "\n\n".join(key_contents) if key_contents else "")
-        )
-        return summary[:12000]
-
-    # ------------------------------------------------------------------ #
-    @tool
-    def get_issue_comments(issue_number: int) -> str:
-        """
-        Fetch all comments on a GitHub issue to get additional context or requirements
-        added after the original issue was opened.
-        Args:
-            issue_number: The issue number
-        """
-        url = f"{GITHUB_API}/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        with httpx.Client() as c:
-            resp = c.get(url, headers=auth_headers, params={"per_page": 20})
-        resp.raise_for_status()
-        comments = resp.json()
-        if not comments:
-            return "No comments on this issue."
-        lines = []
-        for cm in comments:
-            author = cm["user"]["login"]
-            body = cm["body"][:600]
-            lines.append(f"@{author}:\n{body}")
-        return "\n\n---\n\n".join(lines)
 
     return [
         get_file_contents,

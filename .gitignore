@@ -1,26 +1,48 @@
-# Secrets — never push these
+# Secrets — never commit these
 .env
-*.env
-.env.local
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.egg-info/
 .venv/
 venv/
-dist/
-build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
 
 # Node / Next.js
 node_modules/
 .next/
 out/
+next-env.d.ts
+.eslintcache
 
-# Docker
+# Build output
+dist/
+build/
+
+# Logs
 *.log
+npm-debug.log*
 
-# OS
+# Editors and OS
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+
+# Next.js build info
+*.tsbuildinfo

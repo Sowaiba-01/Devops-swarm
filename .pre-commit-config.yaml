@@ -1,0 +1,48 @@
+# Run the checks CI runs, before the commit rather than after the push.
+#   pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      # A committed private key is the failure this whole repo is designed
+      # to avoid; catch it before it leaves the machine.
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: bash -c 'cd backend && mypy app'
+        language: system
+        pass_filenames: false
+        files: ^backend/app/
+
+      - id: pytest
+        name: pytest
+        entry: bash -c 'cd backend && pytest -q'
+        language: system
+        pass_filenames: false
+        files: ^backend/
+
+      - id: frontend-typecheck
+        name: frontend typecheck
+        entry: bash -c 'cd frontend && npm run typecheck'
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/

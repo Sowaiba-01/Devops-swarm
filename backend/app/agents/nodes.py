@@ -56,10 +56,32 @@ logger = get_logger(__name__)
 MAX_IDENTICAL_TOOL_CALLS = 3
 MAX_MALFORMED_TOOL_CALLS = 3
 
+# Groq's free tier meters tokens per minute, not per request, so a ReAct loop
+# that is individually within limits still trips the ceiling once several
+# iterations land inside the same window. A 429 is a wait instruction, not a
+# failure: the provider tells us how long, and the run resumes unchanged.
+MAX_RATE_LIMIT_RETRIES = 4
+DEFAULT_RATE_LIMIT_WAIT = 20.0
+MAX_RATE_LIMIT_WAIT = 90.0
+
 _VERDICT_RE = re.compile(r"###\s*Verdict:\s*(APPROVED|NEEDS_REVISION)", re.IGNORECASE)
 _TESTS_PASSED_RE = re.compile(r"\bTESTS_PASSED\b")
 _TESTS_FAILED_RE = re.compile(r"\bTESTS_FAILED\s*:?\s*(.*)", re.IGNORECASE)
 _MODULE_ERROR_RE = re.compile(r"No module named ['\"]([A-Za-z0-9_.\-]+)['\"]")
+# Groq reports the wait as `try again in 8.5s` / `try again in 1m30s`.
+_RETRY_AFTER_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+
+
+def _rate_limit_wait(detail: str) -> float:
+    """Seconds to wait before retrying, parsed from the provider's message."""
+    match = _RETRY_AFTER_RE.search(detail)
+    if not match:
+        return DEFAULT_RATE_LIMIT_WAIT
+    minutes = float(match.group(1) or 0)
+    seconds = float(match.group(2))
+    # A second of slack: retrying on the exact boundary races the provider's
+    # own window accounting and earns a second 429.
+    return min(minutes * 60 + seconds + 1.0, MAX_RATE_LIMIT_WAIT)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +156,7 @@ async def _react_loop(
 
     final_response = ""
     malformed = 0
+    rate_limited = 0
     call_counts: dict[str, int] = {}
 
     for _ in range(settings.MAX_REACT_ITERATIONS):
@@ -143,6 +166,31 @@ async def _react_loop(
         except Exception as exc:
             detail = str(exc)
             is_malformed = "tool_use_failed" in detail or "failed_generation" in detail
+            is_rate_limited = "rate_limit_exceeded" in detail or "429" in detail
+
+            if is_rate_limited:
+                llm_calls_total.labels(agent=agent_name, outcome="rate_limited").inc()
+                rate_limited += 1
+                if rate_limited > MAX_RATE_LIMIT_RETRIES:
+                    await emit(
+                        run_id,
+                        agent_name,
+                        "status",
+                        f"Rate limited {rate_limited} times — the token budget for this "
+                        "window is exhausted. Stopping rather than waiting further.",
+                    )
+                    break
+                wait = _rate_limit_wait(detail)
+                await emit(
+                    run_id,
+                    agent_name,
+                    "status",
+                    f"Rate limited by the model provider. Waiting {wait:.0f}s "
+                    f"({rate_limited}/{MAX_RATE_LIMIT_RETRIES}) and retrying.",
+                )
+                await asyncio.sleep(wait)
+                continue
+
             llm_calls_total.labels(
                 agent=agent_name, outcome="malformed" if is_malformed else "error"
             ).inc()
